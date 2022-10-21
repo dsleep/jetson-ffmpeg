@@ -8,5 +8,5 @@ Description: @PROJECT_DESCRIPTION@
 Version: @PROJECT_VERSION@
 
 Requires:
-Libs: -L${libdir} -lnvmpi
+Libs: -L${libdir} -L/usr/lib/aarch64-linux-gnu/tegra/ -lnvmpi -lnvbufsurface 
 Cflags: -I${includedir} 
