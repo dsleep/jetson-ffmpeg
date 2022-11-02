@@ -63,20 +63,22 @@ static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf, NvBu
 	if (v4l2_buf == NULL)
 	{
 		cout << "Error while dequeing buffer from output plane" << endl;
+		enc->capture_plane.setStreamStatus(false);
 		return false;
 	}
 
 	if (buffer->planes[0].bytesused == 0)
 	{
-		cout << "Got 0 size buffer in capture \n";
+		cout << "Got 0 size buffer in capture EOS \n";
+		enc->capture_plane.setStreamStatus(false);
 		return false;
 	}
 
-	if(ctx->packets_buf_size < buffer->planes[0].bytesused){
-
+	if(ctx->packets_buf_size < buffer->planes[0].bytesused)
+	{
 		ctx->packets_buf_size=buffer->planes[0].bytesused;
-
-		for(int index=0;index< ctx->packets_num;index++){
+		for(int index=0;index< ctx->packets_num;index++)
+		{
 			delete[] ctx->packets[index];
 			ctx->packets[index]=new unsigned char[ctx->packets_buf_size];	
 		}
@@ -84,16 +86,17 @@ static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf, NvBu
 
 	ctx->packets_size[ctx->buf_index]=buffer->planes[0].bytesused;
 	memcpy(ctx->packets[ctx->buf_index],buffer->planes[0].data,buffer->planes[0].bytesused);
-
 	ctx->timestamp[ctx->buf_index] = (v4l2_buf->timestamp.tv_usec % 1000000) + (v4l2_buf->timestamp.tv_sec * 1000000UL);
-
 	ctx->packet_pools->push(ctx->buf_index);
 
 	v4l2_ctrl_videoenc_outputbuf_metadata enc_metadata;
 	ctx->enc->getMetadata(v4l2_buf->index, enc_metadata);
-	if(enc_metadata.KeyFrame){
+	if(enc_metadata.KeyFrame)
+	{
 		ctx->packets_keyflag[ctx->buf_index]=true;
-	}else{
+	}
+	else
+	{
 		ctx->packets_keyflag[ctx->buf_index]=false;
 	}
 
@@ -101,7 +104,6 @@ static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf, NvBu
 
 	if (ctx->enc->capture_plane.qBuffer(*v4l2_buf, NULL) < 0)
 	{
-
 		ERROR_MSG("Error while Qing buffer at capture plane");
 		return false;
 	}
@@ -113,7 +115,7 @@ static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf, NvBu
 nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 
 	int ret;
-	log_level = LOG_LEVEL_INFO;
+	log_level = LOG_LEVEL_DEBUG;
 	nvmpictx *ctx=new nvmpictx;
 	ctx->index=0;
 	ctx->width=param->width;
@@ -374,7 +376,8 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 }
 
 
-int nvmpi_encoder_put_frame(nvmpictx* ctx,nvFrame* frame){
+int nvmpi_encoder_put_frame(nvmpictx* ctx,nvFrame* frame)
+{
 	int ret;
 
 	struct v4l2_buffer v4l2_buf;
@@ -448,9 +451,9 @@ int nvmpi_encoder_get_packet(nvmpictx* ctx,nvPacket* packet){
 	return 0;
 }
 
-int nvmpi_encoder_close(nvmpictx* ctx){
-
-	ctx->enc->capture_plane.stopDQThread();
+int nvmpi_encoder_close(nvmpictx* ctx)
+{
+	//ctx->enc->capture_plane.stopDQThread();
 	ctx->enc->capture_plane.waitForDQThread(1000);
 	delete ctx->enc;
 	delete ctx->packet_pools;
