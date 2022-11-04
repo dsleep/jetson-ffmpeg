@@ -18,8 +18,9 @@
 
 using namespace std;
 
-struct nvmpictx{
-	NvVideoEncoder *enc;
+struct nvmpictx
+{
+	std::unique_ptr<NvVideoEncoder> enc;
 	int index;
 	std::queue<int> * packet_pools;
 	uint32_t width;
@@ -54,10 +55,14 @@ struct nvmpictx{
 };
 
 
-static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf, NvBuffer * buffer, NvBuffer * shared_buffer, void *arg){
+static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf, 
+	NvBuffer * buffer, 
+	NvBuffer * shared_buffer, 
+	void *arg)
+{
 
 	nvmpictx *ctx = (nvmpictx *) arg;
-	NvVideoEncoder *enc = ctx->enc;
+	NvVideoEncoder *enc = ctx->enc.get();
 	//uint32_t frame_num = ctx->enc->capture_plane.getTotalDequeuedBuffers() - 1;
 
 	if (v4l2_buf == NULL)
@@ -115,7 +120,7 @@ static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf, NvBu
 nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 
 	int ret;
-	log_level = LOG_LEVEL_DEBUG;
+	log_level = LOG_LEVEL_ERROR;
 	nvmpictx *ctx=new nvmpictx;
 	ctx->index=0;
 	ctx->width=param->width;
@@ -242,7 +247,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	}else if(codingType==NV_VIDEO_CodingHEVC){
 		ctx->encoder_pixfmt=V4L2_PIX_FMT_H265;
 	}
-	ctx->enc=NvVideoEncoder::createVideoEncoder("enc0");
+	ctx->enc.reset( NvVideoEncoder::createVideoEncoder("enc0") );
 	TEST_ERROR(!ctx->enc, "Could not create encoder",ret);
 
 	ret = ctx->enc->setCapturePlaneFormat(ctx->encoder_pixfmt, ctx->width,ctx->height, CHUNK_SIZE);
@@ -455,8 +460,13 @@ int nvmpi_encoder_close(nvmpictx* ctx)
 {
 	//ctx->enc->capture_plane.stopDQThread();
 	ctx->enc->capture_plane.waitForDQThread(1000);
-	delete ctx->enc;
+	// clear it out
+	ctx->enc.reset();
+
 	delete ctx->packet_pools;
+
 	delete ctx;
+
+	return 0;
 }
 

@@ -47,11 +47,13 @@
 #ifndef __NV_V4L2_ELELMENT_PLANE_H__
 #define __NV_V4L2_ELELMENT_PLANE_H__
 
-#include <pthread.h>
+//#include <pthread.h>
 #include "NvElement.h"
 #include "NvLogging.h"
 #include "NvBuffer.h"
-
+#include <thread>
+#include <mutex>
+		
 /**
  * Prints a plane-specific message of level LOG_LEVEL_DEBUG.
  * Must not be used by applications.
@@ -471,8 +473,8 @@ public:
      */
     int waitForDQThread(uint32_t max_wait_ms);
 
-    pthread_mutex_t plane_lock; /**< Mutex lock used along with #plane_cond. */
-    pthread_cond_t plane_cond; /**< Plane condition that application can wait on
+    std::mutex plane_lock; /**< Mutex lock used along with #plane_cond. */
+    std::mutex plane_cond; /**< Plane condition that application can wait on
                                     to receive notifications from
                                     #qBuffer/#dqBuffer. */
 
@@ -512,7 +514,7 @@ private:
                                  Its value is toggled by the DQ Thread. */
     bool stop_dqthread; /**< Specifies the value used to signal the DQ Thread to stop. */
 
-    pthread_t dq_thread; /**< Speciifes the pthread ID of the DQ Thread. */
+    std::unique_ptr<std::thread> dq_thread; /**< Speciifes the pthread ID of the DQ Thread. */
 
     dqThreadCallback callback; /**< Specifies the callback method used by the DQ Thread. */
 
@@ -530,7 +532,7 @@ private:
      * @param[in] v4l2_element_plane A pointer to the NvV4l2ElementPlane object
      *                 for which the thread started.
      */
-    static void *dqThread(void *v4l2_element_plane);
+    void dqThread();
 
     NvElementProfiler &v4l2elem_profiler; /**< A reference to the profiler belonging
                                             to the plane's parent element. */
