@@ -25,7 +25,7 @@ add_library(nvmpi SHARED
     NvV4l2ElementPlane.cpp
     NvVideoDecoder.cpp
     NvVideoEncoder.cpp
-    #common/NvVideoConverter.cpp
+	NvVideoConverter.cpp    
     #common/NvApplicationProfiler.cpp
     #common/NvEglRenderer.cpp
     #common/NvUtils.cpp
@@ -42,7 +42,7 @@ add_library(nvmpi_static STATIC
     NvV4l2ElementPlane.cpp
     NvVideoDecoder.cpp
     NvVideoEncoder.cpp
-    #common/NvVideoConverter.cpp
+	NvVideoConverter.cpp    
     #common/NvApplicationProfiler.cpp
     #common/NvEglRenderer.cpp
     #common/NvUtils.cpp
