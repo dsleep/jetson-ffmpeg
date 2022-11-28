@@ -32,6 +32,9 @@
 #include <cstring>
 #include <errno.h>
 
+#include <mutex>
+#include <thread>
+
 #define CONVERTER_DEV "/dev/nvhost-vic"
 #define CAT_NAME "NVVIDCONV"
 
@@ -158,7 +161,8 @@ NvVideoConverter::waitForIdle(uint32_t max_wait_ms)
         timeToWait.tv_nsec / 1000000000L;
     timeToWait.tv_nsec = timeToWait.tv_nsec % 1000000000L;
 
-    pthread_mutex_lock(&capture_plane.plane_lock);
+    std::unique_lock<std::mutex> lk(capture_plane.plane_lock);
+    //pthread_mutex_lock(&capture_plane.plane_lock);
     while (output_plane.getTotalQueuedBuffers() >
            capture_plane.getTotalDequeuedBuffers())
     {
@@ -167,15 +171,16 @@ NvVideoConverter::waitForIdle(uint32_t max_wait_ms)
             return_val = -2;
             break;
         }
-        ret = pthread_cond_timedwait(&capture_plane.plane_cond,
-                &capture_plane.plane_lock, &timeToWait);
+        //TODO?
+        //ret = pthread_cond_timedwait(&capture_plane.plane_cond,
+        //        &capture_plane.plane_lock, &timeToWait);
         if (ret == ETIMEDOUT)
         {
             return_val = -1;
             break;
         }
     }
-    pthread_mutex_unlock(&capture_plane.plane_lock);
+    //pthread_mutex_unlock(&capture_plane.plane_lock);
 
     return return_val;
 }

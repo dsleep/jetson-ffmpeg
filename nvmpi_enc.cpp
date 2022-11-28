@@ -130,13 +130,12 @@ bool converter_capture_plane_dq_callback( struct v4l2_buffer *v4l2_buf,
 	void *arg)
 {		
 	nvmpictx *ctx = (nvmpictx *) arg;
-	NvVideoConverter *conv = ctx->imgConv.get();	
+
+	auto videoEnc = ctx->enc.get();	
+	auto imageConv = ctx->imgConv.get();	
 	
 	if (v4l2_buf)
-	{					
-		std::unique_lock<std::mutex> lk(converterQueueMutex);
-		auto currentBuffer = _convertedImageQueue.front();
-		_convertedImageQueue.pop();				
+	{			
 		
 		v4l2_buffer conv1_qbuf;
 		v4l2_plane planes[MAX_PLANES];
@@ -153,26 +152,26 @@ bool converter_capture_plane_dq_callback( struct v4l2_buffer *v4l2_buf,
 		}
 		else
 		{	
-			conv1_qbuf.index = currentBuffer->index;
+			conv1_qbuf.index = v4l2_buf->index;
 		}
 		
 		// A reference to buffer is saved which can be used when
 		// buffer is dequeued from conv1 output plane
-		if(_videoEncoder->output_plane.qBuffer(conv1_qbuf, buffer)  < 0)
+		if(videoEnc->output_plane.qBuffer(conv1_qbuf, buffer)  < 0)
 		{
-			RR_LOG(LOG_NVM, LOG_INFO, "_imageConverterCallback output_plane.qBuffer error");
+			cout << "image converter output_plane.qBuffer error";
 			return false;
 		}
 	}
 	else
 	{		
-		RR_LOG(LOG_NVM, LOG_INFO, "_imageConverterCallback NULL BUFF");
+		cout <<  "image converter NULL BUFF";
 		return false;
 	}	
 	
 	if (v4l2_buf->m.planes[0].bytesused == 0)
 	{								
-		RR_LOG(LOG_NVM, LOG_INFO, "_imageConverterCallback EOS");
+		cout << "image converter EOS";
 		return false;
 	}
 	
@@ -184,7 +183,9 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	int ret;
 	log_level = LOG_LEVEL_ERROR;
 	nvmpictx *ctx=new nvmpictx;
-	ctx->index=0;
+	ctx->encIndex=0;
+	ctx->convIndex=0;
+
 	ctx->width=param->width;
 	ctx->height=param->height;
 	ctx->enableLossless=false;
@@ -449,9 +450,9 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 		
 		uint32_t convertedFormat = V4L2_PIX_FMT_YUV420M;
 				
-		ret = ctx->imgConv->setOutputPlaneFormat(V4L2_PIX_FMT_XRGB32, FrameWidth, FrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
+		ret = ctx->imgConv->setOutputPlaneFormat(V4L2_PIX_FMT_XRGB32, ctx->width,ctx->height, V4L2_NV_BUFFER_LAYOUT_PITCH);
 		TEST_ERROR(ret < 0, "Error in imgConv->setOutputPlaneFormat", ret);
-		ret = ctx->imgConv->setCapturePlaneFormat(convertedFormat, FrameWidth, FrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
+		ret = ctx->imgConv->setCapturePlaneFormat(convertedFormat, ctx->width,ctx->height, V4L2_NV_BUFFER_LAYOUT_PITCH);
 		TEST_ERROR(ret < 0, "Error in imgConv->setCapturePlaneFormat", ret);
 		
 		ret = ctx->imgConv->output_plane.setupPlane(V4L2_MEMORY_USERPTR, 1, false, true);
@@ -467,7 +468,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 		ret = ctx->imgConv->capture_plane.setStreamStatus(true);
 		TEST_ERROR(ret < 0, "Error in imgConv->setCapturePlaneFormat", ret);
 				
-		ret = ctx->imgConv->capture_plane.startDQThread(this);
+		ret = ctx->imgConv->capture_plane.startDQThread(ctx);
 		TEST_ERROR(ret < 0, "Error in imgConv->setCapturePlaneFormat", ret);
 		
 		// Enqueue all the empty capture plane buffers
@@ -493,16 +494,19 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 {		
 	int ret;
-			
+
 	struct v4l2_buffer v4l2_buf;
 	struct v4l2_plane planes[MAX_PLANES];
-	NvBuffer *buffer = nullptr;
-	
+	NvBuffer *nvBuffer;
+
 	memset(&v4l2_buf, 0, sizeof(v4l2_buf));
-	memset(planes, 0, MAX_PLANES * sizeof(struct v4l2_plane));
-	
+	memset(planes, 0, sizeof(planes));
+
 	v4l2_buf.m.planes = planes;
-	
+
+	if(ctx->imgConv->isInError())
+		return -1;
+
 	if(ctx->convIndex < ctx->imgConv->output_plane.getNumBuffers())
 	{
 		nvBuffer=ctx->imgConv->output_plane.getNthBuffer(ctx->convIndex);
@@ -527,6 +531,9 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 	v4l2_buf.timestamp.tv_sec = frame->timestamp / 1000000;
 
 	ret = ctx->imgConv->output_plane.qBuffer(v4l2_buf, NULL);	
+	TEST_ERROR(ret < 0, "Error while queueing imgConv at output plane", ret);
+
+	return 0;
 }
 
 int nvmpi_video_put_frame(nvmpictx* ctx,nvFrame* frame)
@@ -618,6 +625,9 @@ int nvmpi_encoder_get_packet(nvmpictx* ctx,nvPacket* packet){
 
 int nvmpi_encoder_close(nvmpictx* ctx)
 {
+	// shutdown img converter first
+	ctx->imgConv.reset();
+	
 	//ctx->enc->capture_plane.stopDQThread();
 	ctx->enc->capture_plane.waitForDQThread(1000);
 	// clear it out
