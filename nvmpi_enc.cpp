@@ -281,7 +281,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	ctx->width=param->width;
 	ctx->height=param->height;
 	ctx->enableLossless=false;
-	ctx->enableImageConverter=param->enableImageConverter;
+	ctx->enableImageConverter=false;//param->enableImageConverter;
 	
 	ctx->bitrate=param->bitrate;
 	ctx->ratecontrol = V4L2_MPEG_VIDEO_BITRATE_MODE_CBR;	
