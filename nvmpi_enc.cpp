@@ -12,6 +12,7 @@
 #include <thread>
 #include <unistd.h>
 #include <queue>
+#include <string>
 
 #define CHUNK_SIZE 2*1024*1024
 #define MAX_BUFFERS 32
@@ -56,8 +57,24 @@ struct NvBufferConverterData
 	}
 };
 
+static const char hex_characters[] = {'0', '1', '2', '3', '4', '5', '6', 
+		'7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+
+std::string hex_string(int length)
+{
+	std::string oString;
+	oString.reserve(length);
+	for (int32_t i = 0; i < length; i++)
+	{
+		oString += hex_characters[rand() % 16];
+	}
+	return oString;
+}
+
 struct nvmpictx
 {
+	std::string GUID;
+		
 	std::unique_ptr<NvVideoEncoder> enc;
 	int encIndex;
 	
@@ -252,8 +269,15 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	int ret;
 	log_level = LOG_LEVEL_ERROR;
 	nvmpictx *ctx=new nvmpictx;
+
+	srand(time(0));
+
+	ctx->GUID = hex_string(4);
 	ctx->encIndex=0;
 
+	std::cout << "******** NEW ENCODER *********" << endl;
+	std::cout << "nvmpi_create_encoder: " << ctx->GUID << endl;
+	
 	ctx->width=param->width;
 	ctx->height=param->height;
 	ctx->enableLossless=false;
@@ -521,7 +545,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 		ctx->nvBufConverter->input_params.height = ctx->height;
 		ctx->nvBufConverter->input_params.layout = NVBUF_LAYOUT_PITCH;
 		ctx->nvBufConverter->input_params.memType = NVBUF_MEM_SURFACE_ARRAY;
-		ctx->nvBufConverter->input_params.colorFormat = NVBUF_COLOR_FORMAT_RGBx;
+		ctx->nvBufConverter->input_params.colorFormat = NVBUF_COLOR_FORMAT_ARGB;
 		ctx->nvBufConverter->input_params.memtag = NvBufSurfaceTag_VIDEO_CONVERT;
 
 		ctx->nvBufConverter->output_params.width = ctx->width;
@@ -633,9 +657,9 @@ int nvmpi_video_put_frame(nvmpictx* ctx,
 		}
 	}
 
-	memcpy(nvBuffer->planes[0].data,payload[0],payload_size[0]);
-	memcpy(nvBuffer->planes[1].data,payload[1],payload_size[1]);
-	memcpy(nvBuffer->planes[2].data,payload[2],payload_size[2]);
+	if(payload_size[0])memcpy(nvBuffer->planes[0].data,payload[0],payload_size[0]);
+	if(payload_size[1])memcpy(nvBuffer->planes[1].data,payload[1],payload_size[1]);
+	if(payload_size[2])memcpy(nvBuffer->planes[2].data,payload[2],payload_size[2]);
 	nvBuffer->planes[0].bytesused=payload_size[0];
 	nvBuffer->planes[1].bytesused=payload_size[1];
 	nvBuffer->planes[2].bytesused=payload_size[2];
@@ -656,7 +680,14 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 	NvBufSurface *nvbuf_surf_src = 0;
     NvBufSurface *nvbuf_surf_dst = 0;
 	
+	unsigned long payload_size[3] = { 0 };
+	unsigned char *payload[3] = { 0 };
+
+	std::cout << "nvmpi_converter_put_frame: " << ctx->GUID << endl;	
+
 	int ret = 0;
+
+	//std::cout << "nvmpi_converter_put_frame: " << frame->payload_size[0] << endl;	
 
     ret = NvBufSurfaceFromFd(ctx->nvBufConverter->in_dmabuf_fd, (void**)(&nvbuf_surf_src));
 	if (ret) cerr << "Error in NvBufSurfaceFromFd src." << endl;		
@@ -666,11 +697,19 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 	ret = NvBufSurfaceMap(nvbuf_surf_src, 0, 0, NVBUF_MAP_WRITE);
 	if (ret) cerr << "Error in NvBufSurfaceMap src." << endl;		
 	else
-	{
-		unsigned int i = 0;
-		auto virtualip_data_addr = (void*)nvbuf_surf_src->surfaceList[0].mappedAddr.addr[0];
-		memcpy(virtualip_data_addr,frame->payload[0],frame->payload_size[0]);
-		NvBufSurfaceSyncForDevice(nvbuf_surf_src, 0, 0);
+	{		
+		int32_t plane = 0;
+
+		auto virtualip_data_addr = (void*)nvbuf_surf_src->surfaceList[0].mappedAddr.addr[plane];
+
+		auto copySize = ctx->nvBufConverter->src_fmt_bytes_per_pixel[plane] *
+			nvbuf_surf_src->surfaceList[0].planeParams.width[plane] * 
+			nvbuf_surf_src->surfaceList[0].planeParams.height[plane];
+
+		std::cout << "nvmpi_converter_put_frame: " << copySize << " : " << frame->payload_size[0] << endl;	
+ 
+		memcpy(virtualip_data_addr,frame->payload[0],copySize);
+		NvBufSurfaceSyncForDevice(nvbuf_surf_src, 0, plane);
 	}
 	NvBufSurfaceUnMap(nvbuf_surf_src, 0, 0);
 
@@ -679,14 +718,14 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 	{
 		cerr << "Error in transformation." << endl;			
 	}
-
-	unsigned long payload_size[3];
-	unsigned char *payload[3];
-
+	
 	for (uint32_t plane = 0; plane < ctx->nvBufConverter->dest_fmt_bytes_per_pixel.size(); plane ++)
     {
-		payload_size[plane] = ctx->nvBufConverter->dest_fmt_bytes_per_pixel[plane] *
-			ctx->width * ctx->height;
+		auto copySize = ctx->nvBufConverter->dest_fmt_bytes_per_pixel[plane] *
+			nvbuf_surf_dst->surfaceList[0].planeParams.width[plane] * 
+			nvbuf_surf_dst->surfaceList[0].planeParams.height[plane];
+		payload_size[plane] = copySize;
+
 		ctx->nvBufConverter->planeConversionData[plane].resize(payload_size[plane]);
 		payload[plane] = (unsigned char *)ctx->nvBufConverter->planeConversionData[plane].data();
 
@@ -694,11 +733,12 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 		if (ret) cerr << "Error in NvBufSurfaceMap dst. Plane: " << plane << endl;		
 		else
 		{			
+			NvBufSurfaceSyncForCpu (nvbuf_surf_dst, 0, plane);
 			auto virtualip_data_addr = (void*)nvbuf_surf_dst->surfaceList[0].mappedAddr.addr[plane];
+
 			memcpy(ctx->nvBufConverter->planeConversionData[plane].data(),
 				virtualip_data_addr,
-				payload_size[plane]);
-			//NvBufSurfaceSyncForDevice(nvbuf_surf_dst, 0, plane);
+				payload_size[plane]);			
 		}
 		NvBufSurfaceUnMap(nvbuf_surf_dst, 0, plane);        
     }
@@ -747,8 +787,9 @@ int nvmpi_encoder_get_packet(nvmpictx* ctx,nvPacket* packet){
 
 int nvmpi_encoder_close(nvmpictx* ctx)
 {
-	cout << "nvmpi_encoder_close: entry" << std::endl;
-
+	std::cout << "******** CLOSE ENCODER *********" << endl;
+	std::cout << "nvmpi_encoder_close: " << ctx->GUID << endl;
+	
 	// shutdown img converter first
 	ctx->nvBufConverter.reset();
 	
