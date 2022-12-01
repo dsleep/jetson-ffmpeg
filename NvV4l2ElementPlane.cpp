@@ -841,9 +841,9 @@ void NvV4l2ElementPlane::dqThread()
 
     {
         std::unique_lock<std::mutex> lk(plane_lock);
-        dqthread_running = false;
-        //pthread_cond_broadcast(&plane->plane_cond);
+        dqthread_running = false;        
     }
+    plane_cond.notify_one();
 
     PLANE_DEBUG_MSG("Exiting DQthread");
 }
@@ -868,17 +868,18 @@ NvV4l2ElementPlane::startDQThread(void *data)
 int
 NvV4l2ElementPlane::stopDQThread()
 {
-    if (blocking)
-    {
-        PLANE_WARN_MSG("Should not be called in blocking mode");
-        return 0;
-    }
+    // if (blocking)
+    // {
+    //     PLANE_WARN_MSG("Should not be called in blocking mode");
+    //     return 0;
+    // }
     stop_dqthread = true;
     if(dq_thread && dq_thread->joinable())
     {
+        PLANE_DEBUG_MSG("DQ thread joined");   
         dq_thread->join();
     }
-    dq_thread = 0;
+    dq_thread.reset();
     PLANE_DEBUG_MSG("Stopped DQ Thread");
     return 0;
 }
@@ -888,38 +889,21 @@ NvV4l2ElementPlane::waitForDQThread(uint32_t max_wait_ms)
 {
     PLANE_DEBUG_MSG("waitForDQThread");
 
-    struct timespec timeToWait;
-    struct timeval now;
     int return_val = 0;
-    int ret = 0;
-
-    gettimeofday(&now, NULL);
-
-    timeToWait.tv_nsec = (now.tv_usec + (max_wait_ms % 1000) * 1000L) * 1000L;
-    timeToWait.tv_sec = now.tv_sec + max_wait_ms / 1000 +
-        timeToWait.tv_nsec / 1000000000L;
-    timeToWait.tv_nsec = timeToWait.tv_nsec % 1000000000L;
-
+    
     {
+        using namespace std::chrono_literals;
         std::unique_lock<std::mutex> lk(plane_lock);    
-        while (dqthread_running)
+        
+        if(dqthread_running)
         {
-            //add sleep?
-            /* ret = pthread_cond_timedwait(&plane_cond, &plane_lock, &timeToWait);
-            if (ret == ETIMEDOUT)
+            if(!plane_cond.wait_for(lk, max_wait_ms*1ms, [&]{return dqthread_running == false;})) 
             {
                 return_val = -1;
-                break;
-            } */
+            }
         }
     }
 
-    if(dq_thread && dq_thread->joinable())
-    {
-        PLANE_DEBUG_MSG("joining? maybe detach");
-        dq_thread->join();
-    }
-    
-    PLANE_DEBUG_MSG("Stopped DQ Thread");    
+    stopDQThread();  
     return return_val;
 }

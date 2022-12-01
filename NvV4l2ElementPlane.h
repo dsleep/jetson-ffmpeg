@@ -53,6 +53,7 @@
 #include "NvBuffer.h"
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 		
 /**
  * Prints a plane-specific message of level LOG_LEVEL_DEBUG.
@@ -474,7 +475,7 @@ public:
     int waitForDQThread(uint32_t max_wait_ms);
 
     std::mutex plane_lock; /**< Mutex lock used along with #plane_cond. */
-    std::mutex plane_cond; /**< Plane condition that application can wait on
+    std::condition_variable plane_cond; /**< Plane condition that application can wait on
                                     to receive notifications from
                                     #qBuffer/#dqBuffer. */
 

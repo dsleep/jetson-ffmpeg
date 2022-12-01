@@ -3,6 +3,10 @@
 #include "NvVideoConverter.h"
 
 #include "nvbuf_utils.h"
+
+#include "NvUtils.h"
+#include "NvBufSurface.h"
+
 #include <vector>
 #include <iostream>
 #include <thread>
@@ -20,14 +24,44 @@
 
 using namespace std;
 
+struct NvBufferConverterData
+{
+	int in_dmabuf_fd = -1;
+    int out_dmabuf_fd = -1;
+    NvBufSurf::NvCommonAllocateParams input_params;
+    NvBufSurf::NvCommonAllocateParams output_params;
+    NvBufSurf::NvCommonTransformParams transform_params;
+    vector<int> src_fmt_bytes_per_pixel;
+    vector<int> dest_fmt_bytes_per_pixel;
+    NvBufSurfTransformSyncObj_t syncobj;
+
+	std::vector<uint8_t> planeConversionData[3];
+	
+
+	NvBufferConverterData() {}
+
+	~NvBufferConverterData()
+	{
+		if (in_dmabuf_fd != -1)
+		{
+			NvBufSurf::NvDestroy(in_dmabuf_fd);
+			in_dmabuf_fd = -1;
+		}
+
+		if (out_dmabuf_fd != -1)
+		{
+			NvBufSurf::NvDestroy(out_dmabuf_fd);
+			out_dmabuf_fd = -1;
+		}
+	}
+};
+
 struct nvmpictx
 {
 	std::unique_ptr<NvVideoEncoder> enc;
 	int encIndex;
 	
-	std::unique_ptr<NvVideoConverter> imgConv;
-	int convIndex;
-	
+	std::unique_ptr<NvBufferConverterData> nvBufConverter;
 	
 	std::queue<int> * packet_pools;
 	uint32_t width;
@@ -62,6 +96,95 @@ struct nvmpictx
 	int buf_index;
 };
 
+/**
+ * This function returns vector contians bytes per pixel info
+ * of each plane in sequence.
+**/
+static int
+fill_bytes_per_pixel(NvBufSurfaceColorFormat pixel_format, vector<int> *bytes_per_pixel_fmt)
+{
+    switch (pixel_format)
+    {
+        case NVBUF_COLOR_FORMAT_NV12:
+        case NVBUF_COLOR_FORMAT_NV12_ER:
+        case NVBUF_COLOR_FORMAT_NV21:
+        case NVBUF_COLOR_FORMAT_NV21_ER:
+        case NVBUF_COLOR_FORMAT_NV12_709:
+        case NVBUF_COLOR_FORMAT_NV12_709_ER:
+        case NVBUF_COLOR_FORMAT_NV12_2020:
+        case NVBUF_COLOR_FORMAT_NV16:
+        case NVBUF_COLOR_FORMAT_NV24:
+        case NVBUF_COLOR_FORMAT_NV16_ER:
+        case NVBUF_COLOR_FORMAT_NV24_ER:
+        case NVBUF_COLOR_FORMAT_NV16_709:
+        case NVBUF_COLOR_FORMAT_NV24_709:
+        case NVBUF_COLOR_FORMAT_NV16_709_ER:
+        case NVBUF_COLOR_FORMAT_NV24_709_ER:
+        {
+            bytes_per_pixel_fmt->push_back(1);
+            bytes_per_pixel_fmt->push_back(2);
+            break;
+        }
+        case NVBUF_COLOR_FORMAT_NV12_10LE:
+        case NVBUF_COLOR_FORMAT_NV12_10LE_709:
+        case NVBUF_COLOR_FORMAT_NV12_10LE_709_ER:
+        case NVBUF_COLOR_FORMAT_NV12_10LE_2020:
+        case NVBUF_COLOR_FORMAT_NV21_10LE:
+        case NVBUF_COLOR_FORMAT_NV12_12LE:
+        case NVBUF_COLOR_FORMAT_NV12_12LE_2020:
+        case NVBUF_COLOR_FORMAT_NV21_12LE:
+        case NVBUF_COLOR_FORMAT_NV16_10LE:
+        case NVBUF_COLOR_FORMAT_NV24_10LE_709:
+        case NVBUF_COLOR_FORMAT_NV24_10LE_709_ER:
+        case NVBUF_COLOR_FORMAT_NV24_10LE_2020:
+        case NVBUF_COLOR_FORMAT_NV24_12LE_2020:
+        {
+            bytes_per_pixel_fmt->push_back(2);
+            bytes_per_pixel_fmt->push_back(4);
+            break;
+        }
+        case NVBUF_COLOR_FORMAT_ABGR:
+        //case NVBUF_COLOR_FORMAT_XRGB:
+        case NVBUF_COLOR_FORMAT_ARGB:
+		case NVBUF_COLOR_FORMAT_RGBx:
+        {
+            bytes_per_pixel_fmt->push_back(4);
+            break;
+        }
+        case NVBUF_COLOR_FORMAT_YUV420:
+        case NVBUF_COLOR_FORMAT_YUV420_ER:
+        case NVBUF_COLOR_FORMAT_YUV420_709:
+        case NVBUF_COLOR_FORMAT_YUV420_709_ER:
+        case NVBUF_COLOR_FORMAT_YUV420_2020:
+        case NVBUF_COLOR_FORMAT_YUV444:
+        {
+            bytes_per_pixel_fmt->push_back(1);
+            bytes_per_pixel_fmt->push_back(1);
+            bytes_per_pixel_fmt->push_back(1);
+            break;
+        }
+        case NVBUF_COLOR_FORMAT_UYVY:
+        case NVBUF_COLOR_FORMAT_UYVY_ER:
+        case NVBUF_COLOR_FORMAT_VYUY:
+        case NVBUF_COLOR_FORMAT_VYUY_ER:
+        case NVBUF_COLOR_FORMAT_YUYV:
+        case NVBUF_COLOR_FORMAT_YUYV_ER:
+        case NVBUF_COLOR_FORMAT_YVYU:
+        case NVBUF_COLOR_FORMAT_YVYU_ER:
+        {
+            bytes_per_pixel_fmt->push_back(2);
+            break;
+        }
+        case NVBUF_COLOR_FORMAT_GRAY8:
+        {
+            bytes_per_pixel_fmt->push_back(1);
+            break;
+        }
+        default:
+            return -1;
+    }
+    return 0;
+}
 
 static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf, 
 	NvBuffer * buffer, 
@@ -124,67 +247,12 @@ static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf,
 	return true;
 }
 
-bool converter_capture_plane_dq_callback( struct v4l2_buffer *v4l2_buf, 
-	NvBuffer * buffer, 
-	NvBuffer * shared_buffer, 
-	void *arg)
-{		
-	nvmpictx *ctx = (nvmpictx *) arg;
-
-	auto videoEnc = ctx->enc.get();	
-	auto imageConv = ctx->imgConv.get();	
-	
-	if (v4l2_buf)
-	{			
-		
-		v4l2_buffer conv1_qbuf;
-		v4l2_plane planes[MAX_PLANES];
-		
-		memset(&conv1_qbuf, 0, sizeof(conv1_qbuf));
-		memset(&planes, 0, sizeof(planes));
-
-		conv1_qbuf.m.planes = planes;
-		
-		if (v4l2_buf->m.planes[0].bytesused == 0)
-		{
-			// don't use buffer it
-			buffer = nullptr;					
-		}
-		else
-		{	
-			conv1_qbuf.index = v4l2_buf->index;
-		}
-		
-		// A reference to buffer is saved which can be used when
-		// buffer is dequeued from conv1 output plane
-		if(videoEnc->output_plane.qBuffer(conv1_qbuf, buffer)  < 0)
-		{
-			cout << "image converter output_plane.qBuffer error";
-			return false;
-		}
-	}
-	else
-	{		
-		cout <<  "image converter NULL BUFF";
-		return false;
-	}	
-	
-	if (v4l2_buf->m.planes[0].bytesused == 0)
-	{								
-		cout << "image converter EOS";
-		return false;
-	}
-	
-	return true;
-}
-
 nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 
 	int ret;
 	log_level = LOG_LEVEL_ERROR;
 	nvmpictx *ctx=new nvmpictx;
 	ctx->encIndex=0;
-	ctx->convIndex=0;
 
 	ctx->width=param->width;
 	ctx->height=param->height;
@@ -442,102 +510,100 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 
 	}
 
-
 	// if using img converter
 	if(ctx->enableImageConverter)
 	{
-		ctx->imgConv.reset( NvVideoConverter::createVideoConverter("con0") );
-		
-		uint32_t convertedFormat = V4L2_PIX_FMT_YUV420M;
-				
-		ret = ctx->imgConv->setOutputPlaneFormat(V4L2_PIX_FMT_XRGB32, ctx->width,ctx->height, V4L2_NV_BUFFER_LAYOUT_PITCH);
-		TEST_ERROR(ret < 0, "Error in imgConv->setOutputPlaneFormat", ret);
-		ret = ctx->imgConv->setCapturePlaneFormat(convertedFormat, ctx->width,ctx->height, V4L2_NV_BUFFER_LAYOUT_PITCH);
-		TEST_ERROR(ret < 0, "Error in imgConv->setCapturePlaneFormat", ret);
-		
-		ret = ctx->imgConv->output_plane.setupPlane(V4L2_MEMORY_USERPTR, 1, false, true);
-		TEST_ERROR(ret < 0, "Error in imgConv->setCapturePlaneFormat", ret);
-		ret = ctx->imgConv->capture_plane.setupPlane(V4L2_MEMORY_MMAP, 1, false, false);
-		TEST_ERROR(ret < 0, "Error in imgConv->setCapturePlaneFormat", ret);
+		cout << "nvmpi - enabling image converter" << std::endl;
 			
-		ret = ctx->imgConv->capture_plane.setDQThreadCallback(converter_capture_plane_dq_callback);
-		TEST_ERROR(ret < 0, "Error in imgConv->setCapturePlaneFormat", ret);
-					
-		ret = ctx->imgConv->output_plane.setStreamStatus(true);
-		TEST_ERROR(ret < 0, "Error in imgConv->setCapturePlaneFormat", ret);
-		ret = ctx->imgConv->capture_plane.setStreamStatus(true);
-		TEST_ERROR(ret < 0, "Error in imgConv->setCapturePlaneFormat", ret);
-				
-		ret = ctx->imgConv->capture_plane.startDQThread(ctx);
-		TEST_ERROR(ret < 0, "Error in imgConv->setCapturePlaneFormat", ret);
-		
-		// Enqueue all the empty capture plane buffers
-		for (uint32_t i = 0; i < ctx->imgConv->capture_plane.getNumBuffers(); i++)
+		ctx->nvBufConverter = std::make_unique<NvBufferConverterData>();
+
+		ctx->nvBufConverter->input_params.width = ctx->width;
+		ctx->nvBufConverter->input_params.height = ctx->height;
+		ctx->nvBufConverter->input_params.layout = NVBUF_LAYOUT_PITCH;
+		ctx->nvBufConverter->input_params.memType = NVBUF_MEM_SURFACE_ARRAY;
+		ctx->nvBufConverter->input_params.colorFormat = NVBUF_COLOR_FORMAT_RGBx;
+		ctx->nvBufConverter->input_params.memtag = NvBufSurfaceTag_VIDEO_CONVERT;
+
+		ctx->nvBufConverter->output_params.width = ctx->width;
+		ctx->nvBufConverter->output_params.height = ctx->height;
+		ctx->nvBufConverter->output_params.layout = NVBUF_LAYOUT_PITCH;
+		ctx->nvBufConverter->output_params.memType = NVBUF_MEM_SURFACE_ARRAY;
+		ctx->nvBufConverter->output_params.colorFormat = NVBUF_COLOR_FORMAT_YUV420;
+		ctx->nvBufConverter->output_params.memtag = NvBufSurfaceTag_VIDEO_CONVERT;
+
+		/* Create the HW Buffer. It is exported as
+		** an FD by the hardware.
+		*/
+		ctx->nvBufConverter->in_dmabuf_fd = -1;
+		ret = NvBufSurf::NvAllocate(&ctx->nvBufConverter->input_params, 1, &ctx->nvBufConverter->in_dmabuf_fd);
+		if (ret)
 		{
-			struct v4l2_buffer v4l2_buf;
-			struct v4l2_plane planes[MAX_PLANES];
-			memset(&v4l2_buf, 0, sizeof(v4l2_buf));
-			memset(planes, 0, MAX_PLANES * sizeof(struct v4l2_plane));
-
-			v4l2_buf.index = i;
-			v4l2_buf.m.planes = planes;
-
-			ret = ctx->imgConv->capture_plane.qBuffer(v4l2_buf, NULL);
-			TEST_ERROR(ret < 0, "Error while queueing buffer at imgconv capture plane", ret);
+			cerr << "Error in creating the input buffer." << endl;			
 		}
+
+		ctx->nvBufConverter->out_dmabuf_fd = -1;
+		ret = NvBufSurf::NvAllocate(&ctx->nvBufConverter->output_params, 1, &ctx->nvBufConverter->out_dmabuf_fd);
+		if (ret)
+		{
+			cerr << "Error in creating the output buffer." << endl;
+		}
+
+		/* Store th bpp required for each color
+		 ** format to read/write properly to raw
+		 ** buffers.
+		 */
+		ret = fill_bytes_per_pixel(ctx->nvBufConverter->input_params.colorFormat, &ctx->nvBufConverter->src_fmt_bytes_per_pixel);
+		if (ret)
+		{
+			cerr << "Error figure out bytes per pixel for source format." << endl;		
+		}
+		else
+		{
+			cout << "Planes for src: " << ctx->nvBufConverter->src_fmt_bytes_per_pixel.size() << endl;
+		}
+		ret = fill_bytes_per_pixel(ctx->nvBufConverter->output_params.colorFormat, &ctx->nvBufConverter->dest_fmt_bytes_per_pixel);
+		if (ret)
+		{
+			cerr << "Error figure out bytes per pixel for destination format." << endl;		
+		}
+		else
+		{
+			cout << "Planes for dst: " << ctx->nvBufConverter->dest_fmt_bytes_per_pixel.size() << endl;
+		}
+		/* @transform_flag defines the flags for
+		** enabling the valid transforms.
+		** All the valid parameters are present in
+		** the nvbuf_utils header.
+		*/
+		memset(&ctx->nvBufConverter->transform_params, 0, sizeof(ctx->nvBufConverter->transform_params));
+		ctx->nvBufConverter->transform_params.src_top = 0;
+		ctx->nvBufConverter->transform_params.src_left = 0;
+		ctx->nvBufConverter->transform_params.src_width = ctx->width;
+		ctx->nvBufConverter->transform_params.src_height = ctx->height;
+		ctx->nvBufConverter->transform_params.dst_top = 0;
+		ctx->nvBufConverter->transform_params.dst_left = 0;
+		ctx->nvBufConverter->transform_params.dst_width = ctx->width;
+		ctx->nvBufConverter->transform_params.dst_height = ctx->height;
+		ctx->nvBufConverter->transform_params.flag = (NvBufSurfTransform_Transform_Flag)(NVBUFSURF_TRANSFORM_FILTER | NVBUFSURF_TRANSFORM_FLIP);
+		
+	    ctx->nvBufConverter->transform_params.flip = NvBufSurfTransform_None;
+	    ctx->nvBufConverter->transform_params.filter = NvBufSurfTransformInter_Nearest;
+
+		cout << "nvmpi - post enable" << std::endl;
 	}
 
 	return ctx;
 }
 
 	
-int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
+int nvmpi_video_put_frame(nvmpictx* ctx,
+
+	unsigned long payload_size[3],
+	unsigned char *payload[3],
+	const time_t &timestamp)
 {		
-	int ret;
+	cout << "nvmpi_video_put_frame" << std::endl;
 
-	struct v4l2_buffer v4l2_buf;
-	struct v4l2_plane planes[MAX_PLANES];
-	NvBuffer *nvBuffer;
-
-	memset(&v4l2_buf, 0, sizeof(v4l2_buf));
-	memset(planes, 0, sizeof(planes));
-
-	v4l2_buf.m.planes = planes;
-
-	if(ctx->imgConv->isInError())
-		return -1;
-
-	if(ctx->convIndex < ctx->imgConv->output_plane.getNumBuffers())
-	{
-		nvBuffer=ctx->imgConv->output_plane.getNthBuffer(ctx->convIndex);
-		v4l2_buf.index = ctx->convIndex ;
-		ctx->convIndex++;
-	}
-	else
-	{
-		ret = ctx->imgConv->output_plane.dqBuffer(v4l2_buf, &nvBuffer, NULL, -1);
-		if (ret < 0) 
-		{			
-			cout << "Error DQing buffer at output plane" << std::endl;
-			return false;
-		}
-	}
-	
-	memcpy(nvBuffer->planes[0].data,frame->payload[0],frame->payload_size[0]);	
-	nvBuffer->planes[0].bytesused=frame->payload_size[0];
-
-	v4l2_buf.flags |= V4L2_BUF_FLAG_TIMESTAMP_COPY;
-	v4l2_buf.timestamp.tv_usec = frame->timestamp % 1000000;
-	v4l2_buf.timestamp.tv_sec = frame->timestamp / 1000000;
-
-	ret = ctx->imgConv->output_plane.qBuffer(v4l2_buf, NULL);	
-	TEST_ERROR(ret < 0, "Error while queueing imgConv at output plane", ret);
-
-	return 0;
-}
-
-int nvmpi_video_put_frame(nvmpictx* ctx,nvFrame* frame)
-{		
 	int ret;
 
 	struct v4l2_buffer v4l2_buf;
@@ -552,12 +618,11 @@ int nvmpi_video_put_frame(nvmpictx* ctx,nvFrame* frame)
 	if(ctx->enc->isInError())
 		return -1;
 
-	if(ctx->encIndex < ctx->enc->output_plane.getNumBuffers()){
-
+	if(ctx->encIndex < ctx->enc->output_plane.getNumBuffers())
+	{
 		nvBuffer=ctx->enc->output_plane.getNthBuffer(ctx->encIndex);
-		v4l2_buf.index = ctx->encIndex ;
+		v4l2_buf.index = ctx->encIndex;
 		ctx->encIndex++;
-
 	}
 	else
 	{
@@ -568,22 +633,79 @@ int nvmpi_video_put_frame(nvmpictx* ctx,nvFrame* frame)
 		}
 	}
 
-	memcpy(nvBuffer->planes[0].data,frame->payload[0],frame->payload_size[0]);
-	memcpy(nvBuffer->planes[1].data,frame->payload[1],frame->payload_size[1]);
-	memcpy(nvBuffer->planes[2].data,frame->payload[2],frame->payload_size[2]);
-	nvBuffer->planes[0].bytesused=frame->payload_size[0];
-	nvBuffer->planes[1].bytesused=frame->payload_size[1];
-	nvBuffer->planes[2].bytesused=frame->payload_size[2];
+	memcpy(nvBuffer->planes[0].data,payload[0],payload_size[0]);
+	memcpy(nvBuffer->planes[1].data,payload[1],payload_size[1]);
+	memcpy(nvBuffer->planes[2].data,payload[2],payload_size[2]);
+	nvBuffer->planes[0].bytesused=payload_size[0];
+	nvBuffer->planes[1].bytesused=payload_size[1];
+	nvBuffer->planes[2].bytesused=payload_size[2];
 
 	v4l2_buf.flags |= V4L2_BUF_FLAG_TIMESTAMP_COPY;
-	v4l2_buf.timestamp.tv_usec = frame->timestamp % 1000000;
-	v4l2_buf.timestamp.tv_sec = frame->timestamp / 1000000;
+	v4l2_buf.timestamp.tv_usec = timestamp % 1000000;
+	v4l2_buf.timestamp.tv_sec = timestamp / 1000000;
 
 	ret = ctx->enc->output_plane.qBuffer(v4l2_buf, NULL);
 	TEST_ERROR(ret < 0, "Error while queueing buffer at output plane", ret);
 
 	return 0;
 }
+
+
+int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
+{		
+	NvBufSurface *nvbuf_surf_src = 0;
+    NvBufSurface *nvbuf_surf_dst = 0;
+	
+	int ret = 0;
+
+    ret = NvBufSurfaceFromFd(ctx->nvBufConverter->in_dmabuf_fd, (void**)(&nvbuf_surf_src));
+	if (ret) cerr << "Error in NvBufSurfaceFromFd src." << endl;		
+	ret = NvBufSurfaceFromFd(ctx->nvBufConverter->out_dmabuf_fd, (void**)(&nvbuf_surf_dst));
+	if (ret) cerr << "Error in NvBufSurfaceFromFd dst." << endl;		
+
+	ret = NvBufSurfaceMap(nvbuf_surf_src, 0, 0, NVBUF_MAP_WRITE);
+	if (ret) cerr << "Error in NvBufSurfaceMap src." << endl;		
+	else
+	{
+		unsigned int i = 0;
+		auto virtualip_data_addr = (void*)nvbuf_surf_src->surfaceList[0].mappedAddr.addr[0];
+		memcpy(virtualip_data_addr,frame->payload[0],frame->payload_size[0]);
+		NvBufSurfaceSyncForDevice(nvbuf_surf_src, 0, 0);
+	}
+	NvBufSurfaceUnMap(nvbuf_surf_src, 0, 0);
+
+	ret = NvBufSurf::NvTransform(&ctx->nvBufConverter->transform_params, ctx->nvBufConverter->in_dmabuf_fd, ctx->nvBufConverter->out_dmabuf_fd);
+	if (ret)
+	{
+		cerr << "Error in transformation." << endl;			
+	}
+
+	unsigned long payload_size[3];
+	unsigned char *payload[3];
+
+	for (uint32_t plane = 0; plane < ctx->nvBufConverter->dest_fmt_bytes_per_pixel.size(); plane ++)
+    {
+		payload_size[plane] = ctx->nvBufConverter->dest_fmt_bytes_per_pixel[plane] *
+			ctx->width * ctx->height;
+		ctx->nvBufConverter->planeConversionData[plane].resize(payload_size[plane]);
+		payload[plane] = (unsigned char *)ctx->nvBufConverter->planeConversionData[plane].data();
+
+		ret = NvBufSurfaceMap(nvbuf_surf_dst, 0, plane, NVBUF_MAP_READ);
+		if (ret) cerr << "Error in NvBufSurfaceMap dst. Plane: " << plane << endl;		
+		else
+		{			
+			auto virtualip_data_addr = (void*)nvbuf_surf_dst->surfaceList[0].mappedAddr.addr[plane];
+			memcpy(ctx->nvBufConverter->planeConversionData[plane].data(),
+				virtualip_data_addr,
+				payload_size[plane]);
+			//NvBufSurfaceSyncForDevice(nvbuf_surf_dst, 0, plane);
+		}
+		NvBufSurfaceUnMap(nvbuf_surf_dst, 0, plane);        
+    }
+
+	return nvmpi_video_put_frame(ctx, payload_size, payload, frame->timestamp);
+}
+
 
 int nvmpi_encoder_put_frame(nvmpictx* ctx,nvFrame* frame)
 {
@@ -593,7 +715,7 @@ int nvmpi_encoder_put_frame(nvmpictx* ctx,nvFrame* frame)
 		return nvmpi_converter_put_frame(ctx, frame);
 	}
 	
-	return nvmpi_video_put_frame(ctx, frame);
+	return nvmpi_video_put_frame(ctx, frame->payload_size, frame->payload, frame->timestamp);
 }
 
 int nvmpi_encoder_get_packet(nvmpictx* ctx,nvPacket* packet){
@@ -625,8 +747,10 @@ int nvmpi_encoder_get_packet(nvmpictx* ctx,nvPacket* packet){
 
 int nvmpi_encoder_close(nvmpictx* ctx)
 {
+	cout << "nvmpi_encoder_close: entry" << std::endl;
+
 	// shutdown img converter first
-	ctx->imgConv.reset();
+	ctx->nvBufConverter.reset();
 	
 	//ctx->enc->capture_plane.stopDQThread();
 	ctx->enc->capture_plane.waitForDQThread(1000);
@@ -635,6 +759,8 @@ int nvmpi_encoder_close(nvmpictx* ctx)
 
 	delete ctx->packet_pools;
 	delete ctx;
+
+	cout << "nvmpi_encoder_close: exit" << std::endl;
 
 	return 0;
 }
