@@ -20,7 +20,7 @@ add_library(nvmpi SHARED
     nvmpi_dec.cpp
     nvmpi_enc.cpp
     NvBuffer.cpp
-    NvBufSurface.cpp
+    #NvBufSurface.cpp
     NvElement.cpp
     NvElementProfiler.cpp
     NvLogging.cpp
@@ -38,7 +38,7 @@ add_library(nvmpi_static STATIC
     nvmpi_dec.cpp
     nvmpi_enc.cpp
     NvBuffer.cpp
-    NvBufSurface.cpp
+    #NvBufSurface.cpp
     NvElement.cpp
     NvElementProfiler.cpp
     NvLogging.cpp

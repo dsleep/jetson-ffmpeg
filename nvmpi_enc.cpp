@@ -4,8 +4,8 @@
 
 #include "nvbuf_utils.h"
 
-#include "NvUtils.h"
-#include "NvBufSurface.h"
+//#include "NvUtils.h"
+//#include "NvBufSurface.h"
 
 #include <vector>
 #include <iostream>
@@ -25,6 +25,7 @@
 
 using namespace std;
 
+#if 0
 struct NvBufferConverterData
 {
 	int in_dmabuf_fd = -1;
@@ -56,6 +57,7 @@ struct NvBufferConverterData
 		}
 	}
 };
+#endif
 
 static const char hex_characters[] = {'0', '1', '2', '3', '4', '5', '6', 
 		'7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
@@ -78,7 +80,7 @@ struct nvmpictx
 	std::unique_ptr<NvVideoEncoder> enc;
 	int encIndex;
 	
-	std::unique_ptr<NvBufferConverterData> nvBufConverter;
+	//std::unique_ptr<NvBufferConverterData> nvBufConverter;
 	
 	std::queue<int> * packet_pools;
 	uint32_t width;
@@ -113,6 +115,7 @@ struct nvmpictx
 	int buf_index;
 };
 
+#if 0
 /**
  * This function returns vector contians bytes per pixel info
  * of each plane in sequence.
@@ -202,6 +205,7 @@ fill_bytes_per_pixel(NvBufSurfaceColorFormat pixel_format, vector<int> *bytes_pe
     }
     return 0;
 }
+#endif
 
 static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf, 
 	NvBuffer * buffer, 
@@ -535,6 +539,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	}
 
 	// if using img converter
+#if 0
 	if(ctx->enableImageConverter)
 	{
 		cout << "nvmpi - enabling image converter" << std::endl;
@@ -615,7 +620,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 
 		cout << "nvmpi - post enable" << std::endl;
 	}
-
+#endif
 	return ctx;
 }
 
@@ -674,6 +679,8 @@ int nvmpi_video_put_frame(nvmpictx* ctx,
 	return 0;
 }
 
+
+#if 0
 
 int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 {		
@@ -746,13 +753,14 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 	return nvmpi_video_put_frame(ctx, payload_size, payload, frame->timestamp);
 }
 
+#endif
 
 int nvmpi_encoder_put_frame(nvmpictx* ctx,nvFrame* frame)
 {
 	// does it need an image conversion first?
 	if(frame->payload_size[0] > 0 && ctx->enableImageConverter )
 	{
-		return nvmpi_converter_put_frame(ctx, frame);
+		//return nvmpi_converter_put_frame(ctx, frame);
 	}
 	
 	return nvmpi_video_put_frame(ctx, frame->payload_size, frame->payload, frame->timestamp);
@@ -791,7 +799,7 @@ int nvmpi_encoder_close(nvmpictx* ctx)
 	std::cout << "nvmpi_encoder_close: " << ctx->GUID << endl;
 	
 	// shutdown img converter first
-	ctx->nvBufConverter.reset();
+	//ctx->nvBufConverter.reset();
 	
 	//ctx->enc->capture_plane.stopDQThread();
 	ctx->enc->capture_plane.waitForDQThread(1000);
