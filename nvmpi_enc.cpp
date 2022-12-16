@@ -4,8 +4,11 @@
 
 #include "nvbuf_utils.h"
 
-//#include "NvUtils.h"
-//#include "NvBufSurface.h"
+
+#if JETPACK_VER >= 5
+	#include "NvUtils.h"
+	#include "NvBufSurface.h"
+#endif
 
 #include <vector>
 #include <iostream>
@@ -25,7 +28,7 @@
 
 using namespace std;
 
-#if 0
+#if JETPACK_VER >= 5
 struct NvBufferConverterData
 {
 	int in_dmabuf_fd = -1;
@@ -80,7 +83,9 @@ struct nvmpictx
 	std::unique_ptr<NvVideoEncoder> enc;
 	int encIndex;
 	
-	//std::unique_ptr<NvBufferConverterData> nvBufConverter;
+#if JETPACK_VER >= 5
+	std::unique_ptr<NvBufferConverterData> nvBufConverter;
+#endif
 	
 	std::queue<int> * packet_pools;
 	uint32_t width;
@@ -115,7 +120,7 @@ struct nvmpictx
 	int buf_index;
 };
 
-#if 0
+#if JETPACK_VER >= 5
 /**
  * This function returns vector contians bytes per pixel info
  * of each plane in sequence.
@@ -164,7 +169,8 @@ fill_bytes_per_pixel(NvBufSurfaceColorFormat pixel_format, vector<int> *bytes_pe
             break;
         }
         case NVBUF_COLOR_FORMAT_ABGR:
-        //case NVBUF_COLOR_FORMAT_XRGB:
+		case NVBUF_COLOR_FORMAT_BGRA:
+		case NVBUF_COLOR_FORMAT_BGRx:        
         case NVBUF_COLOR_FORMAT_ARGB:
 		case NVBUF_COLOR_FORMAT_RGBx:
         {
@@ -285,7 +291,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	ctx->width=param->width;
 	ctx->height=param->height;
 	ctx->enableLossless=false;
-	ctx->enableImageConverter=false;//param->enableImageConverter;
+	ctx->enableImageConverter=param->isRawRGBA;
 	
 	ctx->bitrate=param->bitrate;
 	ctx->ratecontrol = V4L2_MPEG_VIDEO_BITRATE_MODE_CBR;	
@@ -539,7 +545,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	}
 
 	// if using img converter
-#if 0
+#if JETPACK_VER >= 5
 	if(ctx->enableImageConverter)
 	{
 		cout << "nvmpi - enabling image converter" << std::endl;
@@ -550,7 +556,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 		ctx->nvBufConverter->input_params.height = ctx->height;
 		ctx->nvBufConverter->input_params.layout = NVBUF_LAYOUT_PITCH;
 		ctx->nvBufConverter->input_params.memType = NVBUF_MEM_SURFACE_ARRAY;
-		ctx->nvBufConverter->input_params.colorFormat = NVBUF_COLOR_FORMAT_ARGB;
+		ctx->nvBufConverter->input_params.colorFormat = NVBUF_COLOR_FORMAT_BGRx;
 		ctx->nvBufConverter->input_params.memtag = NvBufSurfaceTag_VIDEO_CONVERT;
 
 		ctx->nvBufConverter->output_params.width = ctx->width;
@@ -680,7 +686,7 @@ int nvmpi_video_put_frame(nvmpictx* ctx,
 }
 
 
-#if 0
+#if JETPACK_VER >= 5
 
 int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 {		
@@ -690,7 +696,7 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 	unsigned long payload_size[3] = { 0 };
 	unsigned char *payload[3] = { 0 };
 
-	std::cout << "nvmpi_converter_put_frame: " << ctx->GUID << endl;	
+	//std::cout << "nvmpi_converter_put_frame: " << ctx->GUID << endl;	
 
 	int ret = 0;
 
@@ -709,13 +715,23 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 
 		auto virtualip_data_addr = (void*)nvbuf_surf_src->surfaceList[0].mappedAddr.addr[plane];
 
-		auto copySize = ctx->nvBufConverter->src_fmt_bytes_per_pixel[plane] *
-			nvbuf_surf_src->surfaceList[0].planeParams.width[plane] * 
-			nvbuf_surf_src->surfaceList[0].planeParams.height[plane];
+		auto pixelByteSize = ctx->nvBufConverter->src_fmt_bytes_per_pixel[plane];
 
-		std::cout << "nvmpi_converter_put_frame: " << copySize << " : " << frame->payload_size[0] << endl;	
- 
-		memcpy(virtualip_data_addr,frame->payload[0],copySize);
+		auto copySize = //pixelByteSize *
+			nvbuf_surf_src->surfaceList[0].planeParams.pitch[plane] * 
+			nvbuf_surf_src->surfaceList[0].planeParams.height[plane];
+			
+		if( copySize == frame->payload_size[0] )
+		{
+			//std::cout << " - to src full copy" << endl;	
+			memcpy(virtualip_data_addr,frame->payload[0],copySize);
+		}	
+		else
+		{
+			std::cout << " - to src FAILED SIZE MISMATCH" << endl;	
+		}
+			
+		
 		NvBufSurfaceSyncForDevice(nvbuf_surf_src, 0, plane);
 	}
 	NvBufSurfaceUnMap(nvbuf_surf_src, 0, 0);
@@ -726,12 +742,15 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 		cerr << "Error in transformation." << endl;			
 	}
 	
-	for (uint32_t plane = 0; plane < ctx->nvBufConverter->dest_fmt_bytes_per_pixel.size(); plane ++)
+	for (uint32_t plane = 0; plane < nvbuf_surf_dst->surfaceList[0].planeParams.num_planes; plane ++)
     {
-		auto copySize = ctx->nvBufConverter->dest_fmt_bytes_per_pixel[plane] *
+		auto pixelByteSize = ctx->nvBufConverter->dest_fmt_bytes_per_pixel[plane];
+		
+		auto copySize = nvbuf_surf_dst->surfaceList[0].planeParams.pitch[plane] * nvbuf_surf_dst->surfaceList[0].planeParams.height[plane];
+	
+		payload_size[plane] =  pixelByteSize *
 			nvbuf_surf_dst->surfaceList[0].planeParams.width[plane] * 
 			nvbuf_surf_dst->surfaceList[0].planeParams.height[plane];
-		payload_size[plane] = copySize;
 
 		ctx->nvBufConverter->planeConversionData[plane].resize(payload_size[plane]);
 		payload[plane] = (unsigned char *)ctx->nvBufConverter->planeConversionData[plane].data();
@@ -741,11 +760,31 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 		else
 		{			
 			NvBufSurfaceSyncForCpu (nvbuf_surf_dst, 0, plane);
-			auto virtualip_data_addr = (void*)nvbuf_surf_dst->surfaceList[0].mappedAddr.addr[plane];
+			uint8_t* virtualip_data_addr = (uint8_t*)nvbuf_surf_dst->surfaceList[0].mappedAddr.addr[plane];
 
-			memcpy(ctx->nvBufConverter->planeConversionData[plane].data(),
-				virtualip_data_addr,
-				payload_size[plane]);			
+			if( copySize == payload_size[plane]  )
+			{
+				//std::cout << " - from dst full copy" << endl;					
+				memcpy(ctx->nvBufConverter->planeConversionData[plane].data(), virtualip_data_addr,	payload_size[plane]);
+			}	
+			else
+			{
+				//std::cout << " - fromt dst line copy" << endl;	
+				
+				auto dstLineSizeSize = pixelByteSize * nvbuf_surf_dst->surfaceList[0].planeParams.width[plane];
+				auto surfaceLineSize = nvbuf_surf_dst->surfaceList[0].planeParams.pitch[plane];
+				uint8_t *dstAddr = (uint8_t *)ctx->nvBufConverter->planeConversionData[plane].data();
+								
+				for (uint32_t lineY = 0; lineY < nvbuf_surf_dst->surfaceList[0].planeParams.height[plane]; ++lineY)
+				{
+					memcpy(dstAddr,
+						virtualip_data_addr,
+						dstLineSizeSize);
+						
+					dstAddr += dstLineSizeSize;
+					virtualip_data_addr += surfaceLineSize;
+				}
+			}										
 		}
 		NvBufSurfaceUnMap(nvbuf_surf_dst, 0, plane);        
     }
@@ -758,10 +797,12 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 int nvmpi_encoder_put_frame(nvmpictx* ctx,nvFrame* frame)
 {
 	// does it need an image conversion first?
+#if JETPACK_VER >= 5
 	if(frame->payload_size[0] > 0 && ctx->enableImageConverter )
 	{
-		//return nvmpi_converter_put_frame(ctx, frame);
+		return nvmpi_converter_put_frame(ctx, frame);
 	}
+#endif
 	
 	return nvmpi_video_put_frame(ctx, frame->payload_size, frame->payload, frame->timestamp);
 }
@@ -773,7 +814,7 @@ int nvmpi_encoder_get_packet(nvmpictx* ctx,nvPacket* packet){
 	if(ctx->packet_pools->empty())
 		return -1;
 
-	packet_index= ctx->packet_pools->front();
+	packet_index = ctx->packet_pools->front();
 
 	auto ts = ctx->timestamp[packet_index];
 	auto size = ctx->packets_size[packet_index];
@@ -799,7 +840,9 @@ int nvmpi_encoder_close(nvmpictx* ctx)
 	std::cout << "nvmpi_encoder_close: " << ctx->GUID << endl;
 	
 	// shutdown img converter first
-	//ctx->nvBufConverter.reset();
+#if JETPACK_VER >= 5	
+	ctx->nvBufConverter.reset();
+#endif
 	
 	//ctx->enc->capture_plane.stopDQThread();
 	ctx->enc->capture_plane.waitForDQThread(1000);

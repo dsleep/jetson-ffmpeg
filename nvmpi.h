@@ -18,7 +18,9 @@ typedef struct _NVENCPARAM{
 	unsigned int bitrate;
 	unsigned int peak_bitrate;
 	char enableLossless;
-//	char enableImageConverter;
+	
+	char isRawRGBA;
+	
 	char mode_vbr;
 	char insert_spspps_idr;
 	unsigned int iframe_interval;
