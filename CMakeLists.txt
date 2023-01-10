@@ -52,11 +52,15 @@ if(LSB_RELEASE_VERSION_SHORT GREATER_EQUAL "20")
 	message(STATUS " - ubuntu version +20")
 	list(APPEND sourceFiles NvBufSurface.cpp)
 	find_library(LIB_NVBUFSURF nvbufsurftransform PATHS /usr/lib/aarch64-linux-gnu/tegra)	
+	
+	configure_file(nvmpi.pc.in nvmpi.pc @ONLY)
 else()
 	set(JETPACK_VER 4)
 	add_definitions( -DJETPACK_VER=4 )
 	message(STATUS " - ubuntu version <20")
 	set(LIB_NVBUFSURF "")
+	
+	configure_file(nvmpiJP4.pc.in nvmpi.pc @ONLY)
 endif()
 
 add_library(nvmpi SHARED ${sourceFiles} )
@@ -71,7 +75,7 @@ target_include_directories(nvmpi PRIVATE /usr/src/jetson_multimedia_api/include)
 target_include_directories(nvmpi PRIVATE /usr/local/cuda/include)
 target_include_directories(nvmpi_static PRIVATE /usr/src/jetson_multimedia_api/include)
 target_include_directories(nvmpi_static PRIVATE /usr/local/cuda/include)
-configure_file(nvmpi.pc.in nvmpi.pc @ONLY)
+
 include(GNUInstallDirs)
 install(TARGETS nvmpi nvmpi_static
 	    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
