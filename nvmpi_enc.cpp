@@ -1,11 +1,10 @@
 #include "nvmpi.h"
 #include "NvVideoEncoder.h"
-#include "NvVideoConverter.h"
 
-#include "nvbuf_utils.h"
-
-
-#if JETPACK_VER >= 5
+#if JETPACK_VER == 4
+	#include "NvVideoConverter.h"
+#elif JETPACK_VER >= 5
+	#include "nvbuf_utils.h"
 	#include "NvUtils.h"
 	#include "NvBufSurface.h"
 #endif
@@ -812,7 +811,7 @@ int nvmpi_video_put_frame(nvmpictx* ctx,
 }
 
 
-#if JETPACK_VER >= 4
+#if JETPACK_VER == 4
 
 int nvmpi_converter_put_frame(nvmpictx* ctx, nvFrame* frame)
 {	

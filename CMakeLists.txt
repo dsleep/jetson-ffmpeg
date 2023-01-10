@@ -59,6 +59,7 @@ else()
 	add_definitions( -DJETPACK_VER=4 )
 	message(STATUS " - ubuntu version <20")
 	set(LIB_NVBUFSURF "")
+	list(APPEND sourceFiles NvVideoConverter.cpp)
 	
 	configure_file(nvmpiJP4.pc.in nvmpi.pc @ONLY)
 endif()
