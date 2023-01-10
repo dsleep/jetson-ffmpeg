@@ -16,6 +16,10 @@
 #include <unistd.h>
 #include <queue>
 #include <string>
+#include <chrono>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
 
 #define CHUNK_SIZE 2*1024*1024
 #define MAX_BUFFERS 32
@@ -28,7 +32,120 @@
 
 using namespace std;
 
-#if JETPACK_VER >= 5
+#if JETPACK_VER == 4
+struct NvImagePlaneConverter
+{
+	std::condition_variable cv;
+	std::mutex cv_m;
+
+	int bufIndex = 0;
+	std::unique_ptr<NvVideoConverter> yuvConverter;
+	v4l2_buffer *lastBuf = nullptr;
+
+	static bool _converterCapturePlaneDqCallback(struct v4l2_buffer *v4l2_buf, NvBuffer *buffer, NvBuffer *shared_buffer, void *arg)
+	{
+		return static_cast<NvImagePlaneConverter*>(arg)->converterCapturePlaneDqCallback(v4l2_buf, buffer, shared_buffer);
+	}
+
+	bool converterCapturePlaneDqCallback(struct v4l2_buffer *v4l2_buf, NvBuffer *buffer, NvBuffer *shared_buffer)
+	{
+		if (v4l2_buf)
+		{			
+			lastBuf = v4l2_buf;
+		}
+		
+		return true;
+	}
+
+	void Initialize(int32_t InFrameWidth, int32_t InFrameHeight)
+	{
+		bufIndex = 0;
+
+		yuvConverter = std::unique_ptr<NvVideoConverter>(NvVideoConverter::createVideoConverter("conv0"));
+
+		auto ret = yuvConverter->setOutputPlaneFormat(V4L2_PIX_FMT_XRGB32, InFrameWidth, InFrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
+		ret = yuvConverter->setCapturePlaneFormat(V4L2_PIX_FMT_YUV420M, InFrameWidth, InFrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
+
+		ret = yuvConverter->output_plane.setupPlane(V4L2_MEMORY_USERPTR, 1, false, true);
+		ret = yuvConverter->capture_plane.setupPlane(V4L2_MEMORY_MMAP, 1, false, false);
+		
+		yuvConverter->output_plane.setStreamStatus(true);
+		yuvConverter->capture_plane.setStreamStatus(true);
+		
+		yuvConverter->capture_plane.setDQThreadCallback(_converterCapturePlaneDqCallback);
+		yuvConverter->capture_plane.startDQThread(this);
+
+		for (uint32_t i = 0; i < yuvConverter->capture_plane.getNumBuffers(); i++)
+		{
+			struct v4l2_buffer v4l2_buf;
+			struct v4l2_plane planes[MAX_PLANES];
+
+			memset(&v4l2_buf, 0, sizeof(v4l2_buf));
+			memset(planes, 0, MAX_PLANES * sizeof(struct v4l2_plane));
+
+			v4l2_buf.index = i;
+			v4l2_buf.m.planes = planes;
+
+			yuvConverter->capture_plane.qBuffer(v4l2_buf, NULL);
+		}
+
+		cv.notify_one();
+	}
+
+	bool PushRGBFrame(const void *InData, int32_t DataSize, const std::function<void(v4l2_buffer*)> &InCompl)
+	{				
+		struct v4l2_buffer v4l2_buf;
+		struct v4l2_plane planes[MAX_PLANES];		
+		NvBuffer *nvBuffer = nullptr;
+
+		memset(&v4l2_buf, 0, sizeof(v4l2_buf));
+		memset(planes, 0, MAX_PLANES * sizeof(struct v4l2_plane));
+
+		v4l2_buf.m.planes = planes;
+
+		if (yuvConverter->isInError())
+			return false;
+
+		int ret = 0;
+		if (bufIndex < yuvConverter->output_plane.getNumBuffers())
+		{
+			nvBuffer = yuvConverter->output_plane.getNthBuffer(bufIndex);
+			v4l2_buf.index = bufIndex;
+			bufIndex++;
+		}
+		else
+		{
+			ret = yuvConverter->output_plane.dqBuffer(v4l2_buf, &nvBuffer, NULL, -1);
+			if (ret < 0) {
+				cout << "Error DQing buffer at output plane" << std::endl;
+				return false;
+			}
+		}
+
+		if (DataSize > 0)
+		{
+			memcpy(nvBuffer->planes[0].data, InData, DataSize);
+		}
+		nvBuffer->planes[0].bytesused = DataSize;
+				
+		yuvConverter->output_plane.qBuffer(v4l2_buf, nullptr);
+				
+		using namespace std::chrono_literals;
+		std::unique_lock<std::mutex> lk(cv_m);
+		if (cv.wait_for(lk, 1s, [&] {return lastBuf; }))
+		{
+			InCompl(lastBuf);
+		}
+		else
+		{
+			InCompl(nullptr);
+		}
+
+		lastBuf = nullptr;
+		return true;
+	}
+};
+#elif JETPACK_VER >= 5
 struct NvBufferConverterData
 {
 	int in_dmabuf_fd = -1;
@@ -82,8 +199,10 @@ struct nvmpictx
 		
 	std::unique_ptr<NvVideoEncoder> enc;
 	int encIndex;
-	
-#if JETPACK_VER >= 5
+
+#if JETPACK_VER == 4
+	std::unique_ptr<NvImagePlaneConverter> ImgPlaneConverter;
+#elif JETPACK_VER >= 5
 	std::unique_ptr<NvBufferConverterData> nvBufConverter;
 #endif
 	
@@ -545,7 +664,13 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	}
 
 	// if using img converter
-#if JETPACK_VER >= 5
+#if JETPACK_VER == 4
+	if (ctx->enableImageConverter)
+	{
+		ctx->ImgPlaneConverter = std::make_unique<NvImagePlaneConverter>();
+		ctx->ImgPlaneConverter->Initialize(ctx->width, ctx->height);
+	}
+#elif JETPACK_VER >= 5
 	if(ctx->enableImageConverter)
 	{
 		cout << "nvmpi - enabling image converter" << std::endl;
@@ -632,10 +757,11 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 
 	
 int nvmpi_video_put_frame(nvmpictx* ctx,
-
 	unsigned long payload_size[3],
 	unsigned char *payload[3],
-	const time_t &timestamp)
+	const time_t &timestamp,
+	NvBuffer *buffer
+	)
 {		
 	cout << "nvmpi_video_put_frame" << std::endl;
 
@@ -686,7 +812,25 @@ int nvmpi_video_put_frame(nvmpictx* ctx,
 }
 
 
-#if JETPACK_VER >= 5
+#if JETPACK_VER >= 4
+
+int nvmpi_converter_put_frame(nvmpictx* ctx, nvFrame* frame)
+{	
+	int ret = 0;
+	ctx->ImgPlaneConverter->PushRGBFrame(frame->payload[0], frame->payload_size[0], [ctx, frame, &ret](v4l2_buffer* InBuffer)
+	{
+
+		static_assert(sizeof(InBuffer->m.planes[0].m.userptr) == 8, "not 64 bit!?");
+
+		unsigned long payload_size[3] = { InBuffer->m.planes[0].bytesused, InBuffer->m.planes[1].bytesused, InBuffer->m.planes[2].bytesused };
+		unsigned char *payload[3] = { (unsigned char*)InBuffer->m.planes[0].m.userptr, (unsigned char*)InBuffer->m.planes[1].m.userptr, (unsigned char*)InBuffer->m.planes[2].m.userptr };
+
+		ret = nvmpi_video_put_frame(ctx, payload_size, payload, frame->timestamp, nullptr);
+	});
+	return ret;
+}
+
+#elif JETPACK_VER >= 5
 
 int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 {		
@@ -789,7 +933,7 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 		NvBufSurfaceUnMap(nvbuf_surf_dst, 0, plane);        
     }
 
-	return nvmpi_video_put_frame(ctx, payload_size, payload, frame->timestamp);
+	return nvmpi_video_put_frame(ctx, payload_size, payload, frame->timestamp, nullptr);
 }
 
 #endif
@@ -797,14 +941,14 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 int nvmpi_encoder_put_frame(nvmpictx* ctx,nvFrame* frame)
 {
 	// does it need an image conversion first?
-#if JETPACK_VER >= 5
+#if JETPACK_VER >= 4
 	if(frame->payload_size[0] > 0 && ctx->enableImageConverter )
 	{
 		return nvmpi_converter_put_frame(ctx, frame);
 	}
 #endif
 	
-	return nvmpi_video_put_frame(ctx, frame->payload_size, frame->payload, frame->timestamp);
+	return nvmpi_video_put_frame(ctx, frame->payload_size, frame->payload, frame->timestamp, nullptr);
 }
 
 int nvmpi_encoder_get_packet(nvmpictx* ctx,nvPacket* packet){
@@ -840,10 +984,12 @@ int nvmpi_encoder_close(nvmpictx* ctx)
 	std::cout << "nvmpi_encoder_close: " << ctx->GUID << endl;
 	
 	// shutdown img converter first
-#if JETPACK_VER >= 5	
+#if JETPACK_VER == 4
+	ctx->ImgPlaneConverter.reset();
+#elif JETPACK_VER >= 5
 	ctx->nvBufConverter.reset();
 #endif
-	
+
 	//ctx->enc->capture_plane.stopDQThread();
 	ctx->enc->capture_plane.waitForDQThread(1000);
 	// clear it out
