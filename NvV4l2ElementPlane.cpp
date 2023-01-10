@@ -34,7 +34,7 @@
 #include <libv4l2.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
-#include "nvbufsurface.h"
+#include "nvbufsurfaceLIB.h"
 #include <mutex>
 #include <thread>
 
