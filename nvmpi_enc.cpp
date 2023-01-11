@@ -101,7 +101,7 @@ struct NvImagePlaneConverter
 
 		yuvConverter = std::unique_ptr<NvVideoConverter>(NvVideoConverter::createVideoConverter("conv0"));
 
-		auto ret = yuvConverter->setOutputPlaneFormat(V4L2_PIX_FMT_XRGB32, InFrameWidth, InFrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
+		auto ret = yuvConverter->setOutputPlaneFormat(V4L2_PIX_FMT_ABGR32, InFrameWidth, InFrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
 		ret = yuvConverter->setCapturePlaneFormat(V4L2_PIX_FMT_YUV420M, InFrameWidth, InFrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
 
 		ret = yuvConverter->output_plane.setupPlane(V4L2_MEMORY_USERPTR, 1, false, true);
@@ -813,11 +813,11 @@ int nvmpi_video_put_frame(nvmpictx* ctx,
 {		
 	cout << "nvmpi_video_put_frame: " << payload_size[0] << std::endl;
 
-	int ret = 0;
+	int ret = -1;
 
 	struct v4l2_buffer v4l2_buf;
 	struct v4l2_plane planes[MAX_PLANES];
-	NvBuffer *nvBuffer = nullptr
+	NvBuffer *nvBuffer = nullptr;
 
 	memset(&v4l2_buf, 0, sizeof(v4l2_buf));
 	memset(planes, 0, sizeof(planes));
