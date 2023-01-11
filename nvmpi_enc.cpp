@@ -147,7 +147,6 @@ struct NvImagePlaneConverter
 
 		int ret = 0;
 		
-		std::cout << " - bufIndex: " << bufIndex << endl;	
 		if (bufIndex < yuvConverter->output_plane.getNumBuffers())
 		{
 			nvBuffer = yuvConverter->output_plane.getNthBuffer(bufIndex);
@@ -162,6 +161,9 @@ struct NvImagePlaneConverter
 				return false;
 			}
 		}
+		
+		
+		std::cout << " - bufIndex: " << v4l2_buf.index << endl;	
 
 		memcpy(nvBuffer->planes[0].data, InData, DataSize);		
 		nvBuffer->planes[0].bytesused = DataSize;
