@@ -100,12 +100,17 @@ struct NvImagePlaneConverter
 		bufIndex = 0;
 
 		yuvConverter = std::unique_ptr<NvVideoConverter>(NvVideoConverter::createVideoConverter("conv0"));
+		
+		yuvConverter->setInterpolationMethod(V4L2_INTERPOLATION_NEAREST);
+		yuvConverter->setFlipMethod(V4L2_FLIP_METHOD_IDENTITY);
+		yuvConverter->setTnrAlgorithm(V4L2_TNR_ALGO_ORIGINAL);
+		yuvConverter->setYUVRescale(V4L2_YUV_RESCALE_NONE);
 
 		auto ret = yuvConverter->setOutputPlaneFormat(V4L2_PIX_FMT_ABGR32, InFrameWidth, InFrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
 		ret = yuvConverter->setCapturePlaneFormat(V4L2_PIX_FMT_YUV420M, InFrameWidth, InFrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
 
 		ret = yuvConverter->output_plane.setupPlane(V4L2_MEMORY_USERPTR, 1, false, true);
-		ret = yuvConverter->capture_plane.setupPlane(V4L2_MEMORY_MMAP, 1, true, false);
+		ret = yuvConverter->capture_plane.setupPlane(V4L2_MEMORY_USERPTR, 1, false, true);
 		
 		yuvConverter->output_plane.setStreamStatus(true);
 		yuvConverter->capture_plane.setStreamStatus(true);
@@ -161,13 +166,22 @@ struct NvImagePlaneConverter
 				return false;
 			}
 		}
-		
-		
-		std::cout << " - bufIndex: " << v4l2_buf.index << endl;	
-
-		memcpy(nvBuffer->planes[0].data, InData, DataSize);		
-		nvBuffer->planes[0].bytesused = DataSize;
 				
+		//std::cout << " - bufIndex: " << v4l2_buf.index << endl;	
+		
+		//soooo here we trying some magic, it is V4L2_PIX_FMT_ABGR32 -> V4L2_PIX_FMT_YUV420M, but we appear to be AV_PIX_FMT_BGRA
+		uint8_t *srcAddr = (uint8_t *)InData;
+		uint8_t *dstAddr = (uint8_t *)nvBuffer->planes[0].data;
+		//dstAddr++; //start on B so still something is off are we in fact ABGR??!
+		auto copySize = DataSize;
+		//copySize--; // skip that last A as it'll overflow
+		
+		memcpy(dstAddr, srcAddr, DataSize);		
+		nvBuffer->planes[0].bytesused = DataSize;
+		
+		//std::cout << " - frm stride: " << nvBuffer->planes[0].fmt.stride  << endl;	
+		//std::cout << " - frmt size image: " << nvBuffer->planes[0].fmt.sizeimage  << endl;
+						
 					
 		{
 			using namespace std::chrono_literals;

@@ -403,7 +403,7 @@ NvBuffer::fill_buffer_plane_format(uint32_t *num_planes,
             planefmts[0].bytesperpixel = 2;
             break;
         case V4L2_PIX_FMT_ABGR32:
-        case V4L2_PIX_FMT_XRGB32:
+        case V4L2_PIX_FMT_XBGR32:
             *num_planes = 1;
 
             planefmts[0].width = width;
