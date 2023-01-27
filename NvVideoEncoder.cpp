@@ -176,8 +176,8 @@ NvVideoEncoder::setBitrate(uint32_t bitrate)
     struct v4l2_ext_control control;
     struct v4l2_ext_controls ctrls;
 
-    cout << capture_plane_pixfmt <<endl;
-    cout << output_plane_pixfmt <<endl;
+    //cout << capture_plane_pixfmt <<endl;
+    //cout << output_plane_pixfmt <<endl;
     RETURN_ERROR_IF_FORMATS_NOT_SET();
 
     memset(&control, 0, sizeof(control));
@@ -215,8 +215,8 @@ NvVideoEncoder::setPeakBitrate(uint32_t peak_bitrate)
     struct v4l2_ext_control control;
     struct v4l2_ext_controls ctrls;
 
-    cout << capture_plane_pixfmt <<endl;
-    cout << output_plane_pixfmt <<endl;
+    //cout << capture_plane_pixfmt <<endl;
+    //cout << output_plane_pixfmt <<endl;
     RETURN_ERROR_IF_FORMATS_NOT_SET();
 
     memset(&control, 0, sizeof(control));

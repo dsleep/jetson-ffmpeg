@@ -442,7 +442,7 @@ int nvmpi_decoder_put_packet(nvmpictx* ctx,nvPacket* packet){
 
 	if (v4l2_buf.m.planes[0].bytesused == 0) {
 		ctx->eos=true;
-		std::cout << "Input file read complete" << std::endl;
+		//std::cout << "Input file read complete" << std::endl;
 	}
 
 
