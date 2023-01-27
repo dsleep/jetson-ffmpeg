@@ -48,18 +48,18 @@ struct NvImagePlaneConverter
 
 	bool converterCapturePlaneDqCallback(struct v4l2_buffer *v4l2_buf, NvBuffer *buffer, NvBuffer *shared_buffer)
 	{
-		std::cout << "NvImagePlaneConverter::converterCapturePlaneDqCallback" << endl;	
+		//std::cout << "NvImagePlaneConverter::converterCapturePlaneDqCallback" << endl;	
 			
 		{
 			std::unique_lock<std::mutex> lk(cv_m);			
 			if (buffer)
 			{			
-				std::cout << " - has buf" << endl;
+				//std::cout << " - has buf" << endl;
 				lastBuf = buffer;
 			}
 			else
 			{
-				std::cout << " - no buf" << endl;
+				//::cout << " - no buf" << endl;
 			}
 		}
 				
@@ -67,13 +67,13 @@ struct NvImagePlaneConverter
 		
 		if (buffer == nullptr || buffer->planes[0].bytesused == 0)
 		{								
-			std::cout << "converterCapturePlaneDqCallback EOS" << endl;
+			//std::cout << "converterCapturePlaneDqCallback EOS" << endl;
 			return false;
 		}
 		
 		if (yuvConverter->capture_plane.qBuffer(*v4l2_buf, NULL) < 0)
 		{
-			std::cout << "Error while Qing buffer at capture plane" << endl;
+			//std::cout << "Error while Qing buffer at capture plane" << endl;
 			return false;
 		}
 						
@@ -82,7 +82,7 @@ struct NvImagePlaneConverter
 	
 	void ShutDown()
 	{
-		std::cout << "NvImagePlaneConverter::ShutDown" << endl;			
+		//std::cout << "NvImagePlaneConverter::ShutDown" << endl;			
 		
 		if(yuvConverter)
 		{
@@ -95,7 +95,7 @@ struct NvImagePlaneConverter
 
 	void Initialize(int32_t InFrameWidth, int32_t InFrameHeight)
 	{
-		std::cout << "NvImagePlaneConverter::Initialize: " << InFrameWidth << " " << InFrameHeight << endl;	
+		//std::cout << "NvImagePlaneConverter::Initialize: " << InFrameWidth << " " << InFrameHeight << endl;	
 		
 		bufIndex = 0;
 
@@ -118,7 +118,7 @@ struct NvImagePlaneConverter
 		yuvConverter->capture_plane.setDQThreadCallback(_converterCapturePlaneDqCallback);
 		yuvConverter->capture_plane.startDQThread(this);
 
-		std::cout << " - buffer count: " << yuvConverter->capture_plane.getNumBuffers() << endl;	
+		//std::cout << " - buffer count: " << yuvConverter->capture_plane.getNumBuffers() << endl;	
 		for (uint32_t i = 0; i < yuvConverter->capture_plane.getNumBuffers(); i++)
 		{
 			struct v4l2_buffer v4l2_buf;
@@ -136,7 +136,7 @@ struct NvImagePlaneConverter
 
 	bool PushRGBFrame(const void *InData, int32_t DataSize, const std::function<void(NvBuffer*)> &InCompl)
 	{				
-		std::cout << "PushRGBFrame: " << DataSize << endl;	
+		//std::cout << "PushRGBFrame: " << DataSize << endl;	
 	
 		struct v4l2_buffer v4l2_buf;
 		struct v4l2_plane planes[MAX_PLANES];		
@@ -187,19 +187,19 @@ struct NvImagePlaneConverter
 			using namespace std::chrono_literals;
 			std::unique_lock<std::mutex> lk(cv_m);
 			
-			cout << " - queueing... " << std::endl;
+			//cout << " - queueing... " << std::endl;
 			yuvConverter->output_plane.qBuffer(v4l2_buf, nullptr);
 			
 			if(InCompl)
 			{
 				if (cv.wait_for(lk, 10s, [&] {return lastBuf; }))
 				{
-					std::cout << " - run InCompl passed";	
+					//std::cout << " - run InCompl passed";	
 					InCompl(lastBuf);
 				}
 				else
 				{
-					std::cout << " - run InCompl failed";	
+					//std::cout << " - run InCompl failed";	
 					InCompl(nullptr);
 				}
 			}
@@ -415,7 +415,7 @@ static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf,
 
 	if (buffer->planes[0].bytesused == 0)
 	{
-		cout << "Got 0 size buffer in capture EOS \n";
+		//cout << "Got 0 size buffer in capture EOS \n";
 		enc->capture_plane.setStreamStatus(false);
 		return false;
 	}
@@ -468,8 +468,8 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	ctx->GUID = hex_string(4);
 	ctx->encIndex=0;
 
-	std::cout << "******** NEW ENCODER *********" << endl;
-	std::cout << "nvmpi_create_encoder: " << ctx->GUID << endl;
+	//std::cout << "******** NEW ENCODER *********" << endl;
+	//std::cout << "nvmpi_create_encoder: " << ctx->GUID << endl;
 	
 	ctx->width=param->width;
 	ctx->height=param->height;
@@ -737,7 +737,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 #elif JETPACK_VER >= 5
 	if(ctx->enableImageConverter)
 	{
-		cout << "nvmpi - enabling image converter" << std::endl;
+		//cout << "nvmpi - enabling image converter" << std::endl;
 			
 		ctx->nvBufConverter = std::make_unique<NvBufferConverterData>();
 
@@ -783,7 +783,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 		}
 		else
 		{
-			cout << "Planes for src: " << ctx->nvBufConverter->src_fmt_bytes_per_pixel.size() << endl;
+			//cout << "Planes for src: " << ctx->nvBufConverter->src_fmt_bytes_per_pixel.size() << endl;
 		}
 		ret = fill_bytes_per_pixel(ctx->nvBufConverter->output_params.colorFormat, &ctx->nvBufConverter->dest_fmt_bytes_per_pixel);
 		if (ret)
@@ -792,7 +792,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 		}
 		else
 		{
-			cout << "Planes for dst: " << ctx->nvBufConverter->dest_fmt_bytes_per_pixel.size() << endl;
+			//cout << "Planes for dst: " << ctx->nvBufConverter->dest_fmt_bytes_per_pixel.size() << endl;
 		}
 		/* @transform_flag defines the flags for
 		** enabling the valid transforms.
@@ -813,7 +813,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	    ctx->nvBufConverter->transform_params.flip = NvBufSurfTransform_None;
 	    ctx->nvBufConverter->transform_params.filter = NvBufSurfTransformInter_Nearest;
 
-		cout << "nvmpi - post enable" << std::endl;
+		//cout << "nvmpi - post enable" << std::endl;
 	}
 #endif
 	return ctx;
@@ -1057,10 +1057,10 @@ int nvmpi_encoder_get_packet(nvmpictx* ctx,nvPacket* packet){
 
 int nvmpi_encoder_close(nvmpictx* ctx)
 {
-	std::cout << "******** CLOSE ENCODER *********" << endl;
-	std::cout << "nvmpi_encoder_close: " << ctx->GUID << endl;
+	//std::cout << "******** CLOSE ENCODER *********" << endl;
+	//std::cout << "nvmpi_encoder_close: " << ctx->GUID << endl;
 	
-	std::cout << " - close for image processing: " << ctx->GUID << endl;
+	//std::cout << " - close for image processing: " << ctx->GUID << endl;
 
 	// shutdown img converter first
 #if JETPACK_VER == 4
@@ -1073,7 +1073,7 @@ int nvmpi_encoder_close(nvmpictx* ctx)
 	ctx->nvBufConverter.reset();
 #endif
 
-	std::cout << " - close for encoder: " << ctx->GUID << endl;
+	//std::cout << " - close for encoder: " << ctx->GUID << endl;
 
 	//ctx->enc->capture_plane.stopDQThread();
 	ctx->enc->capture_plane.waitForDQThread(1000);
@@ -1083,8 +1083,5 @@ int nvmpi_encoder_close(nvmpictx* ctx)
 	delete ctx->packet_pools;
 	delete ctx;
 
-	cout << "nvmpi_encoder_close: exit" << std::endl;
-
-	return 0;
-}
-
+	//cout << "nvmpi_encoder_close: exit" << std::endl;
+;
