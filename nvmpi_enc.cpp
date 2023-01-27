@@ -1084,4 +1084,4 @@ int nvmpi_encoder_close(nvmpictx* ctx)
 	delete ctx;
 
 	//cout << "nvmpi_encoder_close: exit" << std::endl;
-;
+};
