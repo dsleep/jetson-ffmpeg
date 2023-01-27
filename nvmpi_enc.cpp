@@ -106,7 +106,7 @@ struct NvImagePlaneConverter
 		yuvConverter->setTnrAlgorithm(V4L2_TNR_ALGO_ORIGINAL);
 		yuvConverter->setYUVRescale(V4L2_YUV_RESCALE_NONE);
 
-		auto ret = yuvConverter->setOutputPlaneFormat(V4L2_PIX_FMT_ABGR32, InFrameWidth, InFrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
+		auto ret = yuvConverter->setOutputPlaneFormat(V4L2_PIX_FMT_XRGB32, InFrameWidth, InFrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
 		ret = yuvConverter->setCapturePlaneFormat(V4L2_PIX_FMT_YUV420M, InFrameWidth, InFrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
 
 		ret = yuvConverter->output_plane.setupPlane(V4L2_MEMORY_USERPTR, 1, false, true);
