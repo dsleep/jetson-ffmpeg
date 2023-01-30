@@ -107,11 +107,14 @@ struct NvImagePlaneConverter
 	
 	void ShutDown()
 	{
-		//std::cout << "NvImagePlaneConverter::ShutDown" << endl;			
+		std::cout << "NvImagePlaneConverter::ShutDown" << endl;			
 		
 		if(yuvConverter)
 		{
-			PushRGBFrame(nullptr, 0, 0);		
+			PushRGBFrame(nullptr, 0, 0);
+			yuvConverter->output_plane.setStreamStatus(false);
+			yuvConverter->capture_plane.setStreamStatus(false);
+			//yuvConverter->capture_plane.stopDQThread();	//blocking
 			yuvConverter->capture_plane.waitForDQThread(1000);
 		}
 	}
@@ -1110,32 +1113,33 @@ int nvmpi_encoder_get_packet(nvmpictx* ctx,nvPacket* packet){
 
 int nvmpi_encoder_close(nvmpictx* ctx)
 {
-	//std::cout << "******** CLOSE ENCODER *********" << endl;
-	//std::cout << "nvmpi_encoder_close: " << ctx->GUID << endl;
+	std::cout << "******** CLOSE ENCODER *********" << endl;
+	std::cout << "nvmpi_encoder_close: " << ctx->GUID << endl;
 	
-	//std::cout << " - close for image processing: " << ctx->GUID << endl;
+	std::cout << " - close for image processing: " << ctx->GUID << endl;
 
 	// shutdown img converter first
 #if JETPACK_VER == 4
 	if(ctx->ImgPlaneConverter)
 	{
 		ctx->ImgPlaneConverter->ShutDown();
+		std::cout << "- shutdone completed" << ctx->GUID << endl;
 		ctx->ImgPlaneConverter.reset();
 	}	
 #elif JETPACK_VER >= 5
 	ctx->nvBufConverter.reset();
 #endif
 
-	//std::cout << " - close for encoder: " << ctx->GUID << endl;
+	std::cout << " - close for encoder: " << ctx->GUID << endl;
 
 	//ctx->enc->capture_plane.stopDQThread();
 	ctx->enc->capture_plane.waitForDQThread(1000);
 	// clear it out
 	ctx->enc.reset();
 	
-	//std::cout << " - close for mem: " << ctx->GUID << endl;
+	std::cout << " - close for mem: " << ctx->GUID << endl;
 
 	delete ctx;
 
-	//cout << "nvmpi_encoder_close: exit" << std::endl;
+	cout << "nvmpi_encoder_close: exit" << std::endl;
 };
