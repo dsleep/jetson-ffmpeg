@@ -92,7 +92,8 @@ struct NvImagePlaneConverter
 		if (v4l2_buf->m.planes[0].bytesused == 0)
 		{	
 			//std::cout << "YUV EOS" << endl;
-			
+			yuvConverter->capture_plane.setStreamStatus(false);			
+						
 			PayloadChunk planes[] = { 
 				{ 0, nullptr }
 			};
@@ -110,10 +111,8 @@ struct NvImagePlaneConverter
 		
 		if(yuvConverter)
 		{
-			PushRGBFrame(nullptr, 0, 0);
-			yuvConverter->output_plane.setStreamStatus(false);
-			yuvConverter->capture_plane.setStreamStatus(false);
-			yuvConverter->capture_plane.stopDQThread();
+			PushRGBFrame(nullptr, 0, 0);		
+			yuvConverter->capture_plane.waitForDQThread(1000);
 		}
 	}
 
