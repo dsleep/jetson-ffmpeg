@@ -20,26 +20,36 @@
 #include <condition_variable>
 #include <functional>
 
-#define CHUNK_SIZE 2*1024*1024
-#define MAX_BUFFERS 32
+#define CHUNK_SIZE 512
+#define MAX_BUFFERS 15
 #define TEST_ERROR(condition, message, errorCode)    \
 	if (condition)                               \
 {                                                    \
 	std::cout<< message;                         \
 }
 
+struct PayloadChunk
+{
+	uint32_t size = 0;
+	uint8_t *data = nullptr;
+};
+
 
 using namespace std;
+
+int nvmpi_video_put_frame(nvmpictx* ctx,
+	const PayloadChunk *planes,
+	const time_t &timestamp,
+	NvBuffer *buffer
+	);
 
 #if JETPACK_VER == 4
 struct NvImagePlaneConverter
 {
-	std::condition_variable cv;
-	std::mutex cv_m;
-
+	struct nvmpictx *ctx = nullptr;
+	std::vector<time_t> timeStamps;
 	int bufIndex = 0;
 	std::unique_ptr<NvVideoConverter> yuvConverter;
-	NvBuffer *lastBuf = nullptr;
 
 	static bool _converterCapturePlaneDqCallback(struct v4l2_buffer *v4l2_buf, NvBuffer *buffer, NvBuffer *shared_buffer, void *arg)
 	{
@@ -47,36 +57,50 @@ struct NvImagePlaneConverter
 	}
 
 	bool converterCapturePlaneDqCallback(struct v4l2_buffer *v4l2_buf, NvBuffer *buffer, NvBuffer *shared_buffer)
-	{
-		//std::cout << "NvImagePlaneConverter::converterCapturePlaneDqCallback" << endl;	
+	{		
+		//cout << "IMG CONV CAPTURE DONE"<< std::endl;
+		
+		if (v4l2_buf)
+		{					
+			// std::cout << " - bufidx: " << v4l2_buf->index << endl;			
 			
-		{
-			std::unique_lock<std::mutex> lk(cv_m);			
-			if (buffer)
-			{			
-				//std::cout << " - has buf" << endl;
-				lastBuf = buffer;
-			}
-			else
-			{
-				//::cout << " - no buf" << endl;
-			}
-		}
+			// if(buffer)
+				// std::cout << " - has buffer" << endl;	
+			// if(shared_buffer)
+				// std::cout << " - has shared_buffer" << endl;	
+			
+			PayloadChunk planes[] = { 
+				{ buffer->planes[0].bytesused, buffer->planes[0].data },
+				{ buffer->planes[1].bytesused, buffer->planes[1].data },
+				{ buffer->planes[2].bytesused, buffer->planes[2].data },
+				{ 0, nullptr }
+			};
 				
-		cv.notify_one();
-		
-		if (buffer == nullptr || buffer->planes[0].bytesused == 0)
-		{								
-			//std::cout << "converterCapturePlaneDqCallback EOS" << endl;
-			return false;
-		}
-		
-		if (yuvConverter->capture_plane.qBuffer(*v4l2_buf, NULL) < 0)
-		{
-			//std::cout << "Error while Qing buffer at capture plane" << endl;
-			return false;
-		}
+			nvmpi_video_put_frame(ctx, planes, timeStamps[v4l2_buf->index], nullptr);
 						
+			if (yuvConverter->capture_plane.qBuffer(*v4l2_buf, NULL) < 0)
+			{
+				std::cout << "ERROR DID NOT REQUEUE" << endl;
+				return false;
+			}		
+		}
+		else
+		{	
+			return false;
+		}	
+		
+		if (v4l2_buf->m.planes[0].bytesused == 0)
+		{	
+			//std::cout << "YUV EOS" << endl;
+			
+			PayloadChunk planes[] = { 
+				{ 0, nullptr }
+			};
+			nvmpi_video_put_frame(ctx, planes, timeStamps[v4l2_buf->index], nullptr);
+			
+			return false;
+		}
+		
 		return true;
 	}
 	
@@ -86,17 +110,17 @@ struct NvImagePlaneConverter
 		
 		if(yuvConverter)
 		{
-			PushRGBFrame(nullptr, 0, nullptr);
+			PushRGBFrame(nullptr, 0, 0);
 			yuvConverter->output_plane.setStreamStatus(false);
 			yuvConverter->capture_plane.setStreamStatus(false);
 			yuvConverter->capture_plane.stopDQThread();
 		}
 	}
 
-	void Initialize(int32_t InFrameWidth, int32_t InFrameHeight)
+	void Initialize(struct nvmpictx *parentCtx, int32_t InFrameWidth, int32_t InFrameHeight)
 	{
 		//std::cout << "NvImagePlaneConverter::Initialize: " << InFrameWidth << " " << InFrameHeight << endl;	
-		
+		ctx = parentCtx;
 		bufIndex = 0;
 
 		yuvConverter = std::unique_ptr<NvVideoConverter>(NvVideoConverter::createVideoConverter("conv0"));
@@ -109,8 +133,8 @@ struct NvImagePlaneConverter
 		auto ret = yuvConverter->setOutputPlaneFormat(V4L2_PIX_FMT_XRGB32, InFrameWidth, InFrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
 		ret = yuvConverter->setCapturePlaneFormat(V4L2_PIX_FMT_YUV420M, InFrameWidth, InFrameHeight, V4L2_NV_BUFFER_LAYOUT_PITCH);
 
-		ret = yuvConverter->output_plane.setupPlane(V4L2_MEMORY_USERPTR, 1, false, true);
-		ret = yuvConverter->capture_plane.setupPlane(V4L2_MEMORY_USERPTR, 1, false, true);
+		ret = yuvConverter->output_plane.setupPlane(V4L2_MEMORY_USERPTR, 2, false, true);
+		ret = yuvConverter->capture_plane.setupPlane(V4L2_MEMORY_USERPTR, 2, false, true);
 		
 		yuvConverter->output_plane.setStreamStatus(true);
 		yuvConverter->capture_plane.setStreamStatus(true);
@@ -119,6 +143,7 @@ struct NvImagePlaneConverter
 		yuvConverter->capture_plane.startDQThread(this);
 
 		//std::cout << " - buffer count: " << yuvConverter->capture_plane.getNumBuffers() << endl;	
+		timeStamps.resize(yuvConverter->capture_plane.getNumBuffers());
 		for (uint32_t i = 0; i < yuvConverter->capture_plane.getNumBuffers(); i++)
 		{
 			struct v4l2_buffer v4l2_buf;
@@ -134,7 +159,7 @@ struct NvImagePlaneConverter
 		}
 	}
 
-	bool PushRGBFrame(const void *InData, int32_t DataSize, const std::function<void(NvBuffer*)> &InCompl)
+	bool PushRGBFrame(const void *InData, int32_t DataSize, time_t InTimeStamp)//, const std::function<void(NvBuffer*)> &InCompl)
 	{				
 		//std::cout << "PushRGBFrame: " << DataSize << endl;	
 	
@@ -151,60 +176,32 @@ struct NvImagePlaneConverter
 			return false;
 
 		int ret = 0;
-		
+				
 		if (bufIndex < yuvConverter->output_plane.getNumBuffers())
 		{
+			//std::cout << " - getting yuvConverter buf: " << bufIndex << endl;	
 			nvBuffer = yuvConverter->output_plane.getNthBuffer(bufIndex);
 			v4l2_buf.index = bufIndex;
 			bufIndex++;
 		}
 		else
 		{
+			//std::cout << " - getting yuvConverter dqBuffer" << endl;	
 			ret = yuvConverter->output_plane.dqBuffer(v4l2_buf, &nvBuffer, NULL, -1);
 			if (ret < 0) {
 				cout << "Error DQing buffer at output plane" << std::endl;
 				return false;
 			}
 		}
-				
-		//std::cout << " - bufIndex: " << v4l2_buf.index << endl;	
+		//std::cout << "PushRGBFrame: " << DataSize << " : " << nvBuffer->planes[0].length << endl;	
 		
-		//soooo here we trying some magic, it is V4L2_PIX_FMT_ABGR32 -> V4L2_PIX_FMT_YUV420M, but we appear to be AV_PIX_FMT_BGRA
-		uint8_t *srcAddr = (uint8_t *)InData;
-		uint8_t *dstAddr = (uint8_t *)nvBuffer->planes[0].data;
-		//dstAddr++; //start on B so still something is off are we in fact ABGR??!
-		auto copySize = DataSize;
-		//copySize--; // skip that last A as it'll overflow
-		
-		memcpy(dstAddr, srcAddr, DataSize);		
+		timeStamps[v4l2_buf.index] = InTimeStamp;				
+		memcpy(nvBuffer->planes[0].data, InData, DataSize);		
 		nvBuffer->planes[0].bytesused = DataSize;
-		
-		//std::cout << " - frm stride: " << nvBuffer->planes[0].fmt.stride  << endl;	
-		//std::cout << " - frmt size image: " << nvBuffer->planes[0].fmt.sizeimage  << endl;
-						
 					
-		{
-			using namespace std::chrono_literals;
-			std::unique_lock<std::mutex> lk(cv_m);
-			
-			//cout << " - queueing... " << std::endl;
-			yuvConverter->output_plane.qBuffer(v4l2_buf, nullptr);
-			
-			if(InCompl)
-			{
-				if (cv.wait_for(lk, 10s, [&] {return lastBuf; }))
-				{
-					//std::cout << " - run InCompl passed";	
-					InCompl(lastBuf);
-				}
-				else
-				{
-					//std::cout << " - run InCompl failed";	
-					InCompl(nullptr);
-				}
-			}
-			lastBuf = nullptr;
-		}
+		//cout << " - queueing conv... " << std::endl;
+		yuvConverter->output_plane.qBuffer(v4l2_buf, nullptr);
+		
 		
 		return true;
 	}
@@ -257,6 +254,20 @@ std::string hex_string(int length)
 	return oString;
 }
 
+struct nvmpi_buffer
+{
+	std::vector<uint8_t> packetData;
+	
+	uint32_t packets_size;
+	bool packets_keyflag;
+	uint64_t timestamp;
+		
+	nvmpi_buffer()
+	{
+		packetData.resize(CHUNK_SIZE);
+	}
+};	
+	
 struct nvmpictx
 {
 	std::string GUID;
@@ -270,7 +281,7 @@ struct nvmpictx
 	std::unique_ptr<NvBufferConverterData> nvBufConverter;
 #endif
 	
-	std::queue<int> * packet_pools;
+	
 	uint32_t width;
 	uint32_t height;
 	uint32_t profile;
@@ -296,11 +307,13 @@ struct nvmpictx
 
 	uint32_t packets_buf_size;
 	uint32_t packets_num;
-	unsigned char * packets[MAX_BUFFERS];
-	uint32_t packets_size[MAX_BUFFERS];
-	bool packets_keyflag[MAX_BUFFERS];
-	uint64_t timestamp[MAX_BUFFERS];
-	int buf_index;
+	
+	// buffer from encoders
+	std::mutex pktMutex;	
+	std::queue<int> packet_pools;	
+	int buf_index;	
+	
+	std::unique_ptr< nvmpi_buffer > enc_buffers[MAX_BUFFERS];	
 };
 
 #if JETPACK_VER >= 5
@@ -396,12 +409,14 @@ fill_bytes_per_pixel(NvBufSurfaceColorFormat pixel_format, vector<int> *bytes_pe
 }
 #endif
 
+
 static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf, 
 	NvBuffer * buffer, 
 	NvBuffer * shared_buffer, 
 	void *arg)
 {
-
+	//cout << "ENCODER CAPTURE DONE"<< std::endl;
+	
 	nvmpictx *ctx = (nvmpictx *) arg;
 	NvVideoEncoder *enc = ctx->enc.get();
 	//uint32_t frame_num = ctx->enc->capture_plane.getTotalDequeuedBuffers() - 1;
@@ -420,33 +435,33 @@ static bool encoder_capture_plane_dq_callback(struct v4l2_buffer *v4l2_buf,
 		return false;
 	}
 
-	if(ctx->packets_buf_size < buffer->planes[0].bytesused)
+	auto curEncBuf = ctx->enc_buffers[ctx->buf_index].get();
+	while(curEncBuf->packetData.size() < buffer->planes[0].bytesused)
 	{
-		ctx->packets_buf_size=buffer->planes[0].bytesused;
-		for(int index=0;index< ctx->packets_num;index++)
-		{
-			delete[] ctx->packets[index];
-			ctx->packets[index]=new unsigned char[ctx->packets_buf_size];	
-		}
+		curEncBuf->packetData.resize( curEncBuf->packetData.size() * 2 );
 	}
 
-	ctx->packets_size[ctx->buf_index]=buffer->planes[0].bytesused;
-	memcpy(ctx->packets[ctx->buf_index],buffer->planes[0].data,buffer->planes[0].bytesused);
-	ctx->timestamp[ctx->buf_index] = (v4l2_buf->timestamp.tv_usec % 1000000) + (v4l2_buf->timestamp.tv_sec * 1000000UL);
-	ctx->packet_pools->push(ctx->buf_index);
-
+	curEncBuf->packets_size=buffer->planes[0].bytesused;
+	memcpy(curEncBuf->packetData.data(),buffer->planes[0].data,buffer->planes[0].bytesused);
+	curEncBuf->timestamp = (v4l2_buf->timestamp.tv_usec % 1000000) + (v4l2_buf->timestamp.tv_sec * 1000000UL);
+	
 	v4l2_ctrl_videoenc_outputbuf_metadata enc_metadata;
 	ctx->enc->getMetadata(v4l2_buf->index, enc_metadata);
 	if(enc_metadata.KeyFrame)
 	{
-		ctx->packets_keyflag[ctx->buf_index]=true;
+		curEncBuf->packets_keyflag=true;
 	}
 	else
 	{
-		ctx->packets_keyflag[ctx->buf_index]=false;
+		curEncBuf->packets_keyflag=false;
 	}
-
-	ctx->buf_index=(ctx->buf_index+1)%ctx->packets_num;	
+	
+	// update packet pool
+	{
+		std::unique_lock<std::mutex> lk(ctx->pktMutex);
+		ctx->packet_pools.push(ctx->buf_index);
+		ctx->buf_index=(ctx->buf_index+1)%ctx->packets_num;	
+	}	
 
 	if (ctx->enc->capture_plane.qBuffer(*v4l2_buf, NULL) < 0)
 	{
@@ -482,7 +497,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	ctx->fps_n = param->fps_n;
 	ctx->fps_d = param->fps_d;
 	ctx->iframe_interval = param->iframe_interval;
-	ctx->packet_pools=new std::queue<int>;
+	
 	ctx->buf_index=0;
 	ctx->enable_extended_colorformat=false;
 	ctx->packets_num=param->capture_num;
@@ -587,10 +602,10 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	if(param->mode_vbr)
 		ctx->ratecontrol=V4L2_MPEG_VIDEO_BITRATE_MODE_VBR;
 
-	ctx->packets_buf_size=CHUNK_SIZE;
+	//ctx->packets_buf_size=CHUNK_SIZE;
 
 	for(int index=0;index<MAX_BUFFERS;index++)
-		ctx->packets[index]=new unsigned char[ctx->packets_buf_size];
+		ctx->enc_buffers[index]= std::make_unique< nvmpi_buffer > ();
 
 	if(codingType==NV_VIDEO_CodingH264){
 		ctx->encoder_pixfmt=V4L2_PIX_FMT_H264;
@@ -707,10 +722,10 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	ret = ctx->enc->capture_plane.setStreamStatus(true);
 	TEST_ERROR(ret < 0, "Error in capture plane streamon", ret);
 
-
 	ctx->enc->capture_plane.setDQThreadCallback(encoder_capture_plane_dq_callback);
-
 	ctx->enc->capture_plane.startDQThread(ctx);
+
+	//std::cout << " - encoder buffer count: " << ctx->enc->capture_plane.getNumBuffers() << endl;	
 
 	// Enqueue all the empty capture plane buffers
 	for (uint32_t i = 0; i < ctx->enc->capture_plane.getNumBuffers(); i++)
@@ -732,7 +747,7 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 	if (ctx->enableImageConverter)
 	{
 		ctx->ImgPlaneConverter = std::make_unique<NvImagePlaneConverter>();
-		ctx->ImgPlaneConverter->Initialize(ctx->width, ctx->height);
+		ctx->ImgPlaneConverter->Initialize(ctx, ctx->width, ctx->height);				
 	}
 #elif JETPACK_VER >= 5
 	if(ctx->enableImageConverter)
@@ -821,13 +836,12 @@ nvmpictx* nvmpi_create_encoder(nvCodingType codingType,nvEncParam * param){
 
 	
 int nvmpi_video_put_frame(nvmpictx* ctx,
-	unsigned long payload_size[3],
-	unsigned char *payload[3],
+	const PayloadChunk *inPlaneChunks,
 	const time_t &timestamp,
 	NvBuffer *buffer
 	)
 {		
-	cout << "nvmpi_video_put_frame: " << payload_size[0] << std::endl;
+	//cout << "nvmpi_video_put_frame"<< std::endl;
 
 	int ret = -1;
 
@@ -841,23 +855,13 @@ int nvmpi_video_put_frame(nvmpictx* ctx,
 	v4l2_buf.m.planes = planes;
 
 	if(ctx->enc->isInError())
-		return -1;
+		return -1;	
 
-	if(ctx->encIndex < ctx->enc->output_plane.getNumBuffers())
-	{
-		nvBuffer=ctx->enc->output_plane.getNthBuffer(ctx->encIndex);
-		v4l2_buf.index = ctx->encIndex;
-		ctx->encIndex++;
-	}
-	else
-	{
-		ret = ctx->enc->output_plane.dqBuffer(v4l2_buf, &nvBuffer, NULL, -1);
-		if (ret < 0) {
-			cout << "Error DQing buffer at output plane" << std::endl;
-			return false;
-		}
-	}
-
+	//cout << " - v4l2_buf.index " << v4l2_buf.index << std::endl;
+	//if(buffer)
+	//	cout << " - SHARED" << std::endl;
+		
+	
 	v4l2_buf.flags |= V4L2_BUF_FLAG_TIMESTAMP_COPY;
 	v4l2_buf.timestamp.tv_usec = timestamp % 1000000;
 	v4l2_buf.timestamp.tv_sec = timestamp / 1000000;
@@ -868,12 +872,32 @@ int nvmpi_video_put_frame(nvmpictx* ctx,
 	}
 	else
 	{		
-		if(payload_size[0])memcpy(nvBuffer->planes[0].data,payload[0],payload_size[0]);
-		if(payload_size[1])memcpy(nvBuffer->planes[1].data,payload[1],payload_size[1]);
-		if(payload_size[2])memcpy(nvBuffer->planes[2].data,payload[2],payload_size[2]);
-		nvBuffer->planes[0].bytesused=payload_size[0];
-		nvBuffer->planes[1].bytesused=payload_size[1];
-		nvBuffer->planes[2].bytesused=payload_size[2];
+		if(ctx->encIndex < ctx->enc->output_plane.getNumBuffers())
+		{
+			nvBuffer=ctx->enc->output_plane.getNthBuffer(ctx->encIndex);
+			v4l2_buf.index = ctx->encIndex;
+			ctx->encIndex++;
+		}
+		else
+		{
+			ret = ctx->enc->output_plane.dqBuffer(v4l2_buf, &nvBuffer, NULL, -1);
+			if (ret < 0) {
+				cout << "Error DQing buffer at output plane" << std::endl;
+				return false;
+			}
+		}
+		
+		for(int32_t Iter = 0;inPlaneChunks;Iter++)
+		{
+			auto &curChunk = *inPlaneChunks;			
+			auto planeCpySize = std::min( curChunk.size, nvBuffer->planes[Iter].length );			
+			nvBuffer->planes[Iter].bytesused = planeCpySize;				
+			//std::cout << " - : " << curChunk.size << " : " << nvBuffer->planes[Iter].length << " : " << planeCpySize << endl;				
+			if(curChunk.size)memcpy(nvBuffer->planes[Iter].data,curChunk.data,planeCpySize);
+			else break;			
+			inPlaneChunks++;			
+		}
+		
 		ret = ctx->enc->output_plane.qBuffer(v4l2_buf, NULL);		
 	}
 	
@@ -889,21 +913,29 @@ int nvmpi_converter_put_frame(nvmpictx* ctx, nvFrame* frame)
 {	
 	int ret = 0;
 	
-	std::cout << "nvmpi_converter_put_frame: " << ctx->GUID << endl;	
-	ctx->ImgPlaneConverter->PushRGBFrame(frame->payload[0], frame->payload_size[0], [&](NvBuffer* InBuffer)
+	//std::cout << "nvmpi_converter_put_frame: " << ctx->GUID << endl;	
+	if(frame)
 	{
-		std::cout << "nvmpi_converter_put_frame: IN COMPLETION - " << ctx->GUID << endl;
+		ctx->ImgPlaneConverter->PushRGBFrame(frame->payload[0], frame->payload_size[0], frame->timestamp);
+	}
+	else 
+	{
+		ctx->ImgPlaneConverter->PushRGBFrame(nullptr, 0, 0);
+	}
+	//, [&](NvBuffer* InBuffer)
+	// {
+		// std::cout << "nvmpi_converter_put_frame: IN COMPLETION - " << ctx->GUID << endl;
 		
-		unsigned long payload_size[3] = { InBuffer->planes[0].bytesused, InBuffer->planes[1].bytesused, InBuffer->planes[2].bytesused };
-		unsigned char *payload[3] = { InBuffer->planes[0].data, InBuffer->planes[1].data, InBuffer->planes[2].data };
+		// unsigned long payload_size[3] = { InBuffer->planes[0].bytesused, InBuffer->planes[1].bytesused, InBuffer->planes[2].bytesused };
+		// unsigned char *payload[3] = { InBuffer->planes[0].data, InBuffer->planes[1].data, InBuffer->planes[2].data };
 
-		std::cout << " - payloads: " << payload_size[0] << " : " << payload_size[1] << " : " << payload_size[2] << endl;
+		// std::cout << " - payloads: " << payload_size[0] << " : " << payload_size[1] << " : " << payload_size[2] << endl;
 
-		//auto copySize = nvbuf_surf_dst->surfaceList[0].planeParams.pitch[plane] * nvbuf_surf_dst->surfaceList[0].planeParams.height[plane];
+		// //auto copySize = nvbuf_surf_dst->surfaceList[0].planeParams.pitch[plane] * nvbuf_surf_dst->surfaceList[0].planeParams.height[plane];
 	
 
-		ret = nvmpi_video_put_frame(ctx, payload_size, payload, frame->timestamp, InBuffer);
-	});
+		// ret = nvmpi_video_put_frame(ctx, payload_size, payload, frame->timestamp, InBuffer);
+	// });
 	return ret;
 }
 
@@ -1010,7 +1042,15 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 		NvBufSurfaceUnMap(nvbuf_surf_dst, 0, plane);        
     }
 
-	return nvmpi_video_put_frame(ctx, payload_size, payload, frame->timestamp, nullptr);
+	
+	PayloadChunk planes[] = { 
+		{ payload_size[0], payload[0] },
+		{ payload_size[1], payload[1] },
+		{ payload_size[2], payload[2] },
+		{ 0, nullptr }
+	};
+			
+	return nvmpi_video_put_frame(ctx, planes, frame->timestamp, nullptr);
 }
 
 #endif
@@ -1018,40 +1058,54 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 int nvmpi_encoder_put_frame(nvmpictx* ctx,nvFrame* frame)
 {
 	// does it need an image conversion first?
-#if JETPACK_VER >= 4
+#if JETPACK_VER == 4
+	if(ctx->enableImageConverter )
+	{
+		return nvmpi_converter_put_frame(ctx, frame);
+	}
+#else
 	if(frame->payload_size[0] > 0 && ctx->enableImageConverter )
 	{
 		return nvmpi_converter_put_frame(ctx, frame);
 	}
 #endif
+
+	PayloadChunk planes[] = { 
+		{ frame->payload_size[0], frame->payload[0] },
+		{ frame->payload_size[1], frame->payload[1] },
+		{ frame->payload_size[2], frame->payload[2] },
+		{ 0, nullptr }
+	};
 	
-	return nvmpi_video_put_frame(ctx, frame->payload_size, frame->payload, frame->timestamp, nullptr);
+	return nvmpi_video_put_frame(ctx, planes, frame->timestamp, nullptr);
 }
 
 int nvmpi_encoder_get_packet(nvmpictx* ctx,nvPacket* packet){
 
+	std::unique_lock<std::mutex> lk(ctx->pktMutex);
+	
 	int ret,packet_index;
-
-	if(ctx->packet_pools->empty())
+	if(ctx->packet_pools.empty())
 		return -1;
 
-	packet_index = ctx->packet_pools->front();
+	packet_index = ctx->packet_pools.front();
 
-	auto ts = ctx->timestamp[packet_index];
-	auto size = ctx->packets_size[packet_index];
+	auto curEncBuf = ctx->enc_buffers[packet_index].get();
+	auto ts = curEncBuf->timestamp;
+	auto size = curEncBuf->packets_size;
 	if((ts > 0) && (size == 0)) // Old packet, but 0-0 skip!
 	{
 		return -1;
 	}
 
-	packet->payload=ctx->packets[packet_index];
+	packet->payload=curEncBuf->packetData.data();
 	packet->pts=ts;
-
 	packet->payload_size=size;
-	if(ctx->packets_keyflag[packet_index])
+	
+	if(curEncBuf->packets_keyflag)
 		packet->flags|= 0x0001;//AV_PKT_FLAG_KEY 0x0001
-	ctx->packets_size[packet_index] = 0; // mark as readed
-	ctx->packet_pools->pop();
+	curEncBuf->packets_size = 0; // mark as readed
+	ctx->packet_pools.pop();
 	return 0;
 }
 
@@ -1079,8 +1133,9 @@ int nvmpi_encoder_close(nvmpictx* ctx)
 	ctx->enc->capture_plane.waitForDQThread(1000);
 	// clear it out
 	ctx->enc.reset();
+	
+	//std::cout << " - close for mem: " << ctx->GUID << endl;
 
-	delete ctx->packet_pools;
 	delete ctx;
 
 	//cout << "nvmpi_encoder_close: exit" << std::endl;

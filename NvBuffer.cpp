@@ -268,6 +268,10 @@ NvBuffer::deallocateMemory()
                     " not allocated");
             continue;
         }
+		
+		DEBUG_MSG("FREEING Buffer " << index << ", Plane " << j <<
+                    " allocated to " << (void *) planes[j].data);
+					
         delete[] planes[j].data;
         planes[j].data = NULL;
     }
