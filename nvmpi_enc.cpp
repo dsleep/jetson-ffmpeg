@@ -28,6 +28,9 @@
 	std::cout<< message;                         \
 }
 
+#define PRINT_DBG(...) //printf(__VA_ARGS__); printf("\n");
+#define PRINT_CTR(...) printf(__VA_ARGS__); printf("\n");
+
 struct PayloadChunk
 {
 	uint32_t size = 0;
@@ -70,9 +73,9 @@ struct NvImagePlaneConverter
 				// std::cout << " - has shared_buffer" << endl;	
 			
 			PayloadChunk planes[] = { 
-				{ buffer->planes[0].bytesused, buffer->planes[0].data },
-				{ buffer->planes[1].bytesused, buffer->planes[1].data },
-				{ buffer->planes[2].bytesused, buffer->planes[2].data },
+				{ (uint32_t)buffer->planes[0].bytesused, buffer->planes[0].data },
+				{ (uint32_t)buffer->planes[1].bytesused, buffer->planes[1].data },
+				{ (uint32_t)buffer->planes[2].bytesused, buffer->planes[2].data },
 				{ 0, nullptr }
 			};
 				
@@ -272,7 +275,9 @@ struct nvmpi_buffer
 	
 struct nvmpictx
 {
-	std::string GUID;
+	std::string GUID;	
+	
+	bool bEOSRecv = false;
 		
 	std::unique_ptr<NvVideoEncoder> enc;
 	int encIndex;
@@ -858,6 +863,19 @@ int nvmpi_video_put_frame(nvmpictx* ctx,
 
 	if(ctx->enc->isInError())
 		return -1;	
+	
+	// it was already recieved
+	if(ctx->bEOSRecv) 
+	{
+		PRINT_CTR( "nvmpi_video_put_frame(%s): skipping puts after already had EOS", ctx->GUID.c_str());
+		return 0;	
+	}
+	
+	ctx->bEOSRecv = (inPlaneChunks == nullptr || inPlaneChunks[0].size == 0);	
+	if(ctx->bEOSRecv)
+	{
+		PRINT_CTR( "nvmpi_video_put_frame(%s): recv EOS!!!", ctx->GUID.c_str() );
+	}	
 
 	//cout << " - v4l2_buf.index " << v4l2_buf.index << std::endl;
 	//if(buffer)
@@ -882,9 +900,10 @@ int nvmpi_video_put_frame(nvmpictx* ctx,
 		}
 		else
 		{
-			ret = ctx->enc->output_plane.dqBuffer(v4l2_buf, &nvBuffer, NULL, -1);
-			if (ret < 0) {
-				cout << "Error DQing buffer at output plane" << std::endl;
+			ret = ctx->enc->output_plane.dqBuffer(v4l2_buf, &nvBuffer, NULL, 100);
+			if (ret < 0) 
+			{				
+				PRINT_CTR( "nvmpi_video_put_frame(%s): Error DQing buffer at output plane: %d", ctx->GUID.c_str(), ret);
 				return false;
 			}
 		}
@@ -903,7 +922,10 @@ int nvmpi_video_put_frame(nvmpictx* ctx,
 		ret = ctx->enc->output_plane.qBuffer(v4l2_buf, NULL);		
 	}
 	
-	TEST_ERROR(ret < 0, "Error while queueing buffer at output plane", ret);
+	if(ret < 0)
+	{
+		PRINT_CTR( "nvmpi_video_put_frame(%s): Error while queueing buffer at output plane %d", ctx->GUID.c_str(), ret);
+	}
 
 	return 0;
 }
@@ -1046,9 +1068,9 @@ int nvmpi_converter_put_frame(nvmpictx* ctx,nvFrame* frame)
 
 	
 	PayloadChunk planes[] = { 
-		{ payload_size[0], payload[0] },
-		{ payload_size[1], payload[1] },
-		{ payload_size[2], payload[2] },
+		{ (uint32_t)payload_size[0], payload[0] },
+		{ (uint32_t)payload_size[1], payload[1] },
+		{ (uint32_t)payload_size[2], payload[2] },
 		{ 0, nullptr }
 	};
 			
@@ -1073,9 +1095,9 @@ int nvmpi_encoder_put_frame(nvmpictx* ctx,nvFrame* frame)
 #endif
 
 	PayloadChunk planes[] = { 
-		{ frame->payload_size[0], frame->payload[0] },
-		{ frame->payload_size[1], frame->payload[1] },
-		{ frame->payload_size[2], frame->payload[2] },
+		{ (uint32_t)frame->payload_size[0], frame->payload[0] },
+		{ (uint32_t)frame->payload_size[1], frame->payload[1] },
+		{ (uint32_t)frame->payload_size[2], frame->payload[2] },
 		{ 0, nullptr }
 	};
 	
@@ -1113,10 +1135,9 @@ int nvmpi_encoder_get_packet(nvmpictx* ctx,nvPacket* packet){
 
 int nvmpi_encoder_close(nvmpictx* ctx)
 {
-	std::cout << "******** CLOSE ENCODER *********" << endl;
-	std::cout << "nvmpi_encoder_close: " << ctx->GUID << endl;
-	
-	std::cout << " - close for image processing: " << ctx->GUID << endl;
+	PRINT_CTR( "******** CLOSE ENCODER *********" );
+	PRINT_CTR( "nvmpi_encoder_close: %s", ctx->GUID.c_str());
+	PRINT_CTR( " - close for image processing: %s ", ctx->GUID.c_str());
 
 	// shutdown img converter first
 #if JETPACK_VER == 4
@@ -1130,16 +1151,18 @@ int nvmpi_encoder_close(nvmpictx* ctx)
 	ctx->nvBufConverter.reset();
 #endif
 
-	std::cout << " - close for encoder: " << ctx->GUID << endl;
+	PRINT_CTR( " - close for encoder: %s ", ctx->GUID.c_str());
 
 	//ctx->enc->capture_plane.stopDQThread();
 	ctx->enc->capture_plane.waitForDQThread(1000);
 	// clear it out
 	ctx->enc.reset();
 	
-	std::cout << " - close for mem: " << ctx->GUID << endl;
+	PRINT_CTR( " - close for mem: %s ", ctx->GUID.c_str());
 
 	delete ctx;
 
-	cout << "nvmpi_encoder_close: exit" << std::endl;
+	PRINT_CTR( "nvmpi_encoder_close: exit");
+	
+	return 0;
 };

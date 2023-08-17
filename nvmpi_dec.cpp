@@ -190,7 +190,7 @@ void respondToResolutionEvent(v4l2_format &format, v4l2_crop &crop,nvmpictx* ctx
 	ctx->got_res_event = true;
 }
 
-void *dec_capture_loop_fcn(void *arg){
+void dec_capture_loop_fcn(void *arg){
 	nvmpictx* ctx=(nvmpictx*)arg;
 	
 	struct v4l2_format v4l2Format;
