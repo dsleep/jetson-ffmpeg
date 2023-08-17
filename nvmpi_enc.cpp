@@ -219,8 +219,8 @@ struct NvBufferConverterData
     NvBufSurf::NvCommonAllocateParams input_params;
     NvBufSurf::NvCommonAllocateParams output_params;
     NvBufSurf::NvCommonTransformParams transform_params;
-    vector<int> src_fmt_bytes_per_pixel;
-    vector<int> dest_fmt_bytes_per_pixel;
+    std::vector<int> src_fmt_bytes_per_pixel;
+    std::vector<int> dest_fmt_bytes_per_pixel;
     NvBufSurfTransformSyncObj_t syncobj;
 
 	std::vector<uint8_t> planeConversionData[3];
@@ -329,7 +329,7 @@ struct nvmpictx
  * of each plane in sequence.
 **/
 static int
-fill_bytes_per_pixel(NvBufSurfaceColorFormat pixel_format, vector<int> *bytes_per_pixel_fmt)
+fill_bytes_per_pixel(NvBufSurfaceColorFormat pixel_format, std::vector<int> *bytes_per_pixel_fmt)
 {
     switch (pixel_format)
     {
